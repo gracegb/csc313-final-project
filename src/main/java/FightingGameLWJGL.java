@@ -19,6 +19,7 @@ import java.util.stream.Stream;
 
 import static org.lwjgl.glfw.GLFW.*;
 import static org.lwjgl.opengl.GL11.*;
+import static org.lwjgl.opengl.GL12.*;
 import static org.lwjgl.system.MemoryUtil.NULL;
 
 public class FightingGameLWJGL {
@@ -38,6 +39,8 @@ public class FightingGameLWJGL {
     private static final int KICK_COOLDOWN = 28;
     private static final float PUNCH_RANGE = 1.45f;
     private static final float KICK_RANGE = 1.75f;
+    // GLB->OBJ exports often already bake V orientation for image-top-left data.
+    private static final boolean FLIP_V_COORDINATE = false;
 
     private static final int[] TRACKED_KEYS = {
         GLFW_KEY_ESCAPE,
@@ -306,6 +309,7 @@ public class FightingGameLWJGL {
 
     private void render() {
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        glDisable(GL_BLEND);
 
         float aspect = (float) WIDTH / HEIGHT;
         setPerspective(65.0f, aspect, 0.1f, 100.0f);
@@ -461,11 +465,13 @@ public class FightingGameLWJGL {
         glDisable(GL_DEPTH_TEST);
         glDisable(GL_CULL_FACE);
         glDisable(GL_TEXTURE_2D);
+        glEnable(GL_BLEND);
     }
 
     private void endOverlay() {
         glEnable(GL_DEPTH_TEST);
         glEnable(GL_CULL_FACE);
+        glDisable(GL_BLEND);
 
         glMatrixMode(GL_MODELVIEW);
         glPopMatrix();
@@ -612,13 +618,20 @@ public class FightingGameLWJGL {
         }
 
         void render(float tintR, float tintG, float tintB) {
+            // Imported OBJ files may not share consistent winding, so avoid dropping faces.
+            glDisable(GL_CULL_FACE);
             for (MeshPart part : parts) {
                 if (part.textureId != 0) {
                     glEnable(GL_TEXTURE_2D);
                     glBindTexture(GL_TEXTURE_2D, part.textureId);
-                    glColor3f(tintR, tintG, tintB);
+                    // Treat alpha textures as cutouts so transparent texels don't draw as black quads.
+                    glEnable(GL_ALPHA_TEST);
+                    glAlphaFunc(GL_GREATER, 0.1f);
+                    // Keep texture colors faithful; tinting textured parts causes odd-looking materials.
+                    glColor3f(1.0f, 1.0f, 1.0f);
                 } else {
                     glDisable(GL_TEXTURE_2D);
+                    glDisable(GL_ALPHA_TEST);
                     glColor3f(tintR, tintG, tintB);
                 }
 
@@ -630,7 +643,9 @@ public class FightingGameLWJGL {
                 glEnd();
             }
             glDisable(GL_TEXTURE_2D);
+            glDisable(GL_ALPHA_TEST);
             glBindTexture(GL_TEXTURE_2D, 0);
+            glEnable(GL_CULL_FACE);
         }
 
         void dispose() {
@@ -767,7 +782,7 @@ public class FightingGameLWJGL {
             if (ref.uvIndex >= 0 && ref.uvIndex < rawUvs.size()) {
                 float[] uv = rawUvs.get(ref.uvIndex);
                 u = uv[0];
-                vv = 1.0f - uv[1];
+                vv = FLIP_V_COORDINATE ? (1.0f - uv[1]) : uv[1];
             }
 
             data.add((v[0] - cx) * scale);
@@ -864,10 +879,10 @@ public class FightingGameLWJGL {
 
             int tex = glGenTextures();
             glBindTexture(GL_TEXTURE_2D, tex);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
             glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
             glBindTexture(GL_TEXTURE_2D, 0);
             return tex;
