@@ -424,7 +424,40 @@ public class FightingGameLWJGL {
         drawText(92, 643, "P1: " + models.get(p1.selected).name() + (p1.ready ? " READY" : " NOT READY"), 0.08f, 0.08f, 0.08f);
         drawText(WIDTH - 498, 643, "P2: " + models.get(p2.selected).name() + (p2.ready ? " READY" : " NOT READY"), 0.08f, 0.08f, 0.08f);
 
+        drawCharacterPortraitPlaceholders();
+
         endOverlay();
+    }
+
+    private void drawCharacterPortraitPlaceholders() {
+        int tileSize = 92;
+        int tileGap = 12;
+        int rowY = HEIGHT - 158;
+        int totalWidth = models.size() * tileSize + (models.size() - 1) * tileGap;
+        int startX = (WIDTH - totalWidth) / 2;
+
+        drawRectPx(startX - 16, rowY - 34, totalWidth + 32, tileSize + 48, 0.05f, 0.07f, 0.10f, 0.84f);
+        drawText(startX - 2, rowY - 16, "2D PORTRAIT PLACEHOLDERS", 0.92f, 0.94f, 0.98f);
+
+        for (int i = 0; i < models.size(); i++) {
+            int x = startX + i * (tileSize + tileGap);
+            boolean p1Selected = i == p1.selected;
+            boolean p2Selected = i == p2.selected;
+
+            drawRectPx(x, rowY, tileSize, tileSize, 0.14f, 0.17f, 0.23f, 0.95f);
+            drawRectPx(x + 5, rowY + 5, tileSize - 10, tileSize - 10, 0.22f, 0.26f, 0.34f, 0.92f);
+            drawText(x + 16, rowY + 44, "PNG", 0.93f, 0.95f, 0.99f);
+            drawText(x + 8, rowY + tileSize + 18, models.get(i).name(), 0.90f, 0.92f, 0.98f);
+
+            if (p1Selected) {
+                drawRectOutlinePx(x - 3, rowY - 3, tileSize + 6, tileSize + 6, 2, 0.33f, 0.88f, 0.55f, 0.98f);
+                drawText(x + 4, rowY - 10, "P1", 0.33f, 0.88f, 0.55f);
+            }
+            if (p2Selected) {
+                drawRectOutlinePx(x - 3, rowY - 3, tileSize + 6, tileSize + 6, 2, 0.98f, 0.62f, 0.36f, 0.98f);
+                drawText(x + tileSize - 26, rowY - 10, "P2", 0.98f, 0.62f, 0.36f);
+            }
+        }
     }
 
     private void drawFightOverlay() {
@@ -448,6 +481,15 @@ public class FightingGameLWJGL {
             drawText(530, 318, "PLAYER " + winner + " WINS", 1.0f, 1.0f, 1.0f);
             drawText(430, 356, "PRESS ENTER TO RETURN TO CHARACTER SELECT", 0.94f, 0.94f, 0.98f);
         }
+
+        // new overlay with boxes like smash bros, navigate with keyboard, show ready status, and show win screen with option to return to char select
+        // for array of possible characters, draw box with name and image
+        for (int i = 0; i < models.size(); i++) {
+            float[] color = models.get(i).color();
+            drawRectPx(20 + i * 110, HEIGHT - 120, 100, 100, color[0], color[1], color[2], 0.9f);
+            drawText(30 + i * 110, HEIGHT - 90, models.get(i).name(), 0.08f, 0.08f, 0.08f);
+        }
+        drawRectPx(20,20,20,20,1.0f,1.0f,1.0f,0.95f);
 
         endOverlay();
     }
@@ -489,6 +531,14 @@ public class FightingGameLWJGL {
         glVertex2f(x + w, y + h);
         glVertex2f(x, y + h);
         glEnd();
+    }
+
+    private void drawRectOutlinePx(int x, int y, int w, int h, int thickness, float r, float g, float b, float a) {
+        if (w <= 0 || h <= 0 || thickness <= 0) return;
+        drawRectPx(x, y, w, thickness, r, g, b, a);
+        drawRectPx(x, y + h - thickness, w, thickness, r, g, b, a);
+        drawRectPx(x, y + thickness, thickness, h - (thickness * 2), r, g, b, a);
+        drawRectPx(x + w - thickness, y + thickness, thickness, h - (thickness * 2), r, g, b, a);
     }
 
     private void drawText(float x, float y, String text, float r, float g, float b) {
