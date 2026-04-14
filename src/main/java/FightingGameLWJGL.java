@@ -7,6 +7,8 @@ import javax.imageio.ImageIO;
 import java.awt.image.BufferedImage;
 import java.io.BufferedReader;
 import java.io.IOException;
+import java.io.InputStreamReader;
+import java.io.PrintWriter;
 import java.nio.ByteBuffer;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -15,7 +17,13 @@ import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Stream;
+import java.net.ServerSocket;
+import java.net.Socket;
+import java.net.InetSocketAddress;
 
 import static org.lwjgl.glfw.GLFW.*;
 import static org.lwjgl.opengl.GL11.*;
@@ -66,15 +74,20 @@ public class FightingGameLWJGL {
     private final boolean[] prevKeys = new boolean[GLFW_KEY_LAST + 1];
 
     private List<FighterModel> models;
+    private NetworkMode networkMode = NetworkMode.OFFLINE;
+    private HostSession hostSession;
+    private ClientSession clientSession;
+    private String networkStatus = "LOCAL";
 
     private GameState gameState = GameState.CHAR_SELECT;
     private int winner = 0;
 
     public static void main(String[] args) {
-        new FightingGameLWJGL().run();
+        new FightingGameLWJGL().run(args);
     }
 
-    private void run() {
+    private void run(String[] args) {
+        configureNetwork(args == null ? new String[0] : args);
         initWindow();
         try {
             models = loadModels();
@@ -85,10 +98,12 @@ public class FightingGameLWJGL {
             p1.selected = 0;
             p2.selected = models.size() > 1 ? 1 : 0;
 
+            startNetworkIfNeeded();
             loop();
         } catch (Exception e) {
             e.printStackTrace();
         } finally {
+            closeNetwork();
             for (FighterModel model : models == null ? List.<FighterModel>of() : models) {
                 model.mesh().dispose();
             }
@@ -97,6 +112,39 @@ public class FightingGameLWJGL {
             GLFWErrorCallback cb = glfwSetErrorCallback(null);
             if (cb != null) cb.free();
         }
+    }
+
+    private void configureNetwork(String[] args) {
+        if (args.length == 0) {
+            networkMode = NetworkMode.OFFLINE;
+            return;
+        }
+
+        if ("--host".equalsIgnoreCase(args[0])) {
+            networkMode = NetworkMode.HOST;
+            int port = args.length >= 2 ? Integer.parseInt(args[1]) : 7777;
+            hostSession = new HostSession(port);
+            networkStatus = "HOST " + port;
+            return;
+        }
+
+        if ("--join".equalsIgnoreCase(args[0])) {
+            if (args.length < 2) {
+                throw new IllegalArgumentException("Usage: --join <host:port> (example: --join 127.0.0.1:7777)");
+            }
+            networkMode = NetworkMode.CLIENT;
+            String[] hp = args[1].split(":", 2);
+            if (hp.length != 2) {
+                throw new IllegalArgumentException("Join target must be <host:port>");
+            }
+            String host = hp[0];
+            int port = Integer.parseInt(hp[1]);
+            clientSession = new ClientSession(host, port);
+            networkStatus = "JOIN " + host + ":" + port;
+            return;
+        }
+
+        throw new IllegalArgumentException("Unknown args. Use no args, --host [port], or --join host:port");
     }
 
     private void initWindow() {
@@ -141,10 +189,24 @@ public class FightingGameLWJGL {
     }
 
     private void update() {
-        if (gameState == GameState.CHAR_SELECT) {
-            updateCharacterSelect();
+        if (networkMode == NetworkMode.CLIENT) {
+            updateClientOnly();
         } else {
-            updateFight();
+            PlayerInput p1Input = collectP1Input();
+            PlayerInput p2Input = networkMode == NetworkMode.HOST
+                ? hostSession.consumeP2Input()
+                : collectP2Input();
+
+            if (gameState == GameState.CHAR_SELECT) {
+                updateCharacterSelectWithInput(p1Input, p2Input);
+            } else {
+                updateFightWithInput(p1Input, p2Input);
+            }
+
+            if (networkMode == NetworkMode.HOST) {
+                hostSession.broadcastSnapshot(GameSnapshot.capture(gameState, winner, p1, p2));
+                networkStatus = "HOST " + hostSession.port + " | connected " + hostSession.getClientCount();
+            }
         }
 
         if (isPressed(GLFW_KEY_ESCAPE)) {
@@ -152,33 +214,34 @@ public class FightingGameLWJGL {
         }
     }
 
-    private void updateCharacterSelect() {
-        if (isPressed(GLFW_KEY_A)) {
+    private void updateCharacterSelectWithInput(PlayerInput p1Input, PlayerInput p2Input) {
+        if (p1Input.selectLeft) {
             p1.selected = wrap(p1.selected - 1, models.size());
             p1.ready = false;
         }
-        if (isPressed(GLFW_KEY_D)) {
+        if (p1Input.selectRight) {
             p1.selected = wrap(p1.selected + 1, models.size());
             p1.ready = false;
         }
-        if (isPressed(GLFW_KEY_LEFT)) {
+        if (p2Input.selectLeft) {
             p2.selected = wrap(p2.selected - 1, models.size());
             p2.ready = false;
         }
-        if (isPressed(GLFW_KEY_RIGHT)) {
+        if (p2Input.selectRight) {
             p2.selected = wrap(p2.selected + 1, models.size());
             p2.ready = false;
         }
 
-        if (isPressed(GLFW_KEY_F)) p1.ready = !p1.ready;
-        if (isPressed(GLFW_KEY_RIGHT_SHIFT) || isPressed(GLFW_KEY_LEFT_SHIFT)) p2.ready = !p2.ready;
+        if (p1Input.readyToggle) p1.ready = !p1.ready;
+        if (p2Input.readyToggle) p2.ready = !p2.ready;
 
         if (p1.ready && p2.ready) {
             startRound();
         }
 
         String title = "CHAR SELECT | P1: " + models.get(p1.selected).name() + (p1.ready ? " [READY]" : " [NOT READY]")
-            + " | P2: " + models.get(p2.selected).name() + (p2.ready ? " [READY]" : " [NOT READY]");
+            + " | P2: " + models.get(p2.selected).name() + (p2.ready ? " [READY]" : " [NOT READY]")
+            + " | " + networkStatus;
         glfwSetWindowTitle(window, title);
     }
 
@@ -207,14 +270,14 @@ public class FightingGameLWJGL {
         gameState = GameState.FIGHT;
     }
 
-    private void updateFight() {
+    private void updateFightWithInput(PlayerInput p1Input, PlayerInput p2Input) {
         if (winner != 0) {
-            if (isPressed(GLFW_KEY_ENTER)) {
+            if (p1Input.confirm || p2Input.confirm) {
                 p1.ready = false;
                 p2.ready = false;
                 gameState = GameState.CHAR_SELECT;
             }
-            glfwSetWindowTitle(window, "FIGHT OVER | Winner: P" + winner + " | Press ENTER to return");
+            glfwSetWindowTitle(window, "FIGHT OVER | Winner: P" + winner + " | Press ENTER to return | " + networkStatus);
             return;
         }
 
@@ -223,15 +286,15 @@ public class FightingGameLWJGL {
         float p2dx = 0.0f;
         float p2dz = 0.0f;
 
-        if (isDown(GLFW_KEY_W)) p1dz -= MOVE_SPEED;
-        if (isDown(GLFW_KEY_S)) p1dz += MOVE_SPEED;
-        if (isDown(GLFW_KEY_A)) p1dx -= MOVE_SPEED;
-        if (isDown(GLFW_KEY_D)) p1dx += MOVE_SPEED;
+        if (p1Input.up) p1dz -= MOVE_SPEED;
+        if (p1Input.down) p1dz += MOVE_SPEED;
+        if (p1Input.left) p1dx -= MOVE_SPEED;
+        if (p1Input.right) p1dx += MOVE_SPEED;
 
-        if (isDown(GLFW_KEY_UP)) p2dz -= MOVE_SPEED;
-        if (isDown(GLFW_KEY_DOWN)) p2dz += MOVE_SPEED;
-        if (isDown(GLFW_KEY_LEFT)) p2dx -= MOVE_SPEED;
-        if (isDown(GLFW_KEY_RIGHT)) p2dx += MOVE_SPEED;
+        if (p2Input.up) p2dz -= MOVE_SPEED;
+        if (p2Input.down) p2dz += MOVE_SPEED;
+        if (p2Input.left) p2dx -= MOVE_SPEED;
+        if (p2Input.right) p2dx += MOVE_SPEED;
 
         p1.x = clamp(p1.x + p1dx, -ARENA_HALF_WIDTH, ARENA_HALF_WIDTH);
         p1.z = clamp(p1.z + p1dz, -ARENA_HALF_DEPTH, ARENA_HALF_DEPTH);
@@ -241,8 +304,8 @@ public class FightingGameLWJGL {
         p1.facing = p2.x >= p1.x ? 90.0f : -90.0f;
         p2.facing = p1.x >= p2.x ? 90.0f : -90.0f;
 
-        updateAttackState(p1, isPressed(GLFW_KEY_F), isPressed(GLFW_KEY_R));
-        updateAttackState(p2, isPressed(GLFW_KEY_PERIOD), isPressed(GLFW_KEY_RIGHT_SHIFT) || isPressed(GLFW_KEY_LEFT_SHIFT));
+        updateAttackState(p1, p1Input.punchPressed, p1Input.kickPressed);
+        updateAttackState(p2, p2Input.punchPressed, p2Input.kickPressed);
 
         resolveHit(p1, p2);
         resolveHit(p2, p1);
@@ -256,8 +319,78 @@ public class FightingGameLWJGL {
             winner = 1;
         }
 
-        String title = "FIGHT | P1 HP " + p1.health + " | P2 HP " + p2.health;
+        String title = "FIGHT | P1 HP " + p1.health + " | P2 HP " + p2.health + " | " + networkStatus;
         glfwSetWindowTitle(window, title);
+    }
+
+    private void updateClientOnly() {
+        PlayerInput local = collectClientInput();
+        clientSession.sendInput(local);
+        GameSnapshot snapshot = clientSession.consumeSnapshot();
+        if (snapshot != null) {
+            snapshot.applyTo(this);
+        }
+        networkStatus = clientSession.statusText();
+        String title = "NETWORK CLIENT | " + networkStatus;
+        glfwSetWindowTitle(window, title);
+    }
+
+    private void startNetworkIfNeeded() throws IOException {
+        if (networkMode == NetworkMode.HOST && hostSession != null) {
+            hostSession.start();
+        } else if (networkMode == NetworkMode.CLIENT && clientSession != null) {
+            clientSession.connect();
+        }
+    }
+
+    private void closeNetwork() {
+        if (hostSession != null) {
+            hostSession.close();
+        }
+        if (clientSession != null) {
+            clientSession.close();
+        }
+    }
+
+    private PlayerInput collectP1Input() {
+        return PlayerInput.of(
+            isDown(GLFW_KEY_A),
+            isDown(GLFW_KEY_D),
+            isDown(GLFW_KEY_W),
+            isDown(GLFW_KEY_S),
+            isPressed(GLFW_KEY_F),
+            isPressed(GLFW_KEY_R),
+            isPressed(GLFW_KEY_F),
+            isPressed(GLFW_KEY_A),
+            isPressed(GLFW_KEY_D),
+            isPressed(GLFW_KEY_ENTER)
+        );
+    }
+
+    private PlayerInput collectP2Input() {
+        return PlayerInput.of(
+            isDown(GLFW_KEY_LEFT),
+            isDown(GLFW_KEY_RIGHT),
+            isDown(GLFW_KEY_UP),
+            isDown(GLFW_KEY_DOWN),
+            isPressed(GLFW_KEY_PERIOD),
+            isPressed(GLFW_KEY_RIGHT_SHIFT) || isPressed(GLFW_KEY_LEFT_SHIFT),
+            isPressed(GLFW_KEY_RIGHT_SHIFT) || isPressed(GLFW_KEY_LEFT_SHIFT),
+            isPressed(GLFW_KEY_LEFT),
+            isPressed(GLFW_KEY_RIGHT),
+            isPressed(GLFW_KEY_ENTER)
+        );
+    }
+
+    private PlayerInput collectClientInput() {
+        int slot = clientSession.getAssignedSlot();
+        if (slot == 1) {
+            return collectP1Input();
+        }
+        if (slot == 2) {
+            return collectP2Input();
+        }
+        return PlayerInput.empty();
     }
 
     private void updateAttackState(Fighter fighter, boolean punchPressed, boolean kickPressed) {
@@ -417,6 +550,7 @@ public class FightingGameLWJGL {
 
         drawRectPx(20, 20, WIDTH - 40, 48, 0.07f, 0.09f, 0.13f, 0.82f);
         drawText(36, 36, "CHARACTER SELECT - P1 A/D + F READY | P2 LEFT/RIGHT + SHIFT READY", 1.0f, 1.0f, 1.0f);
+        drawText(36, 56, "SESSION: " + networkStatus, 0.78f, 0.86f, 0.97f);
 
         drawRectPx(80, 620, 430, 34, p1.ready ? 0.30f : 0.78f, p1.ready ? 0.86f : 0.50f, p1.ready ? 0.48f : 0.36f, 0.95f);
         drawRectPx(WIDTH - 510, 620, 430, 34, p2.ready ? 0.30f : 0.78f, p2.ready ? 0.86f : 0.50f, p2.ready ? 0.48f : 0.36f, 0.95f);
@@ -474,6 +608,7 @@ public class FightingGameLWJGL {
 
         drawRectPx(20, HEIGHT - 62, WIDTH - 40, 42, 0.05f, 0.07f, 0.10f, 0.86f);
         drawText(34, HEIGHT - 36, "P1 MOVE WASD | F PUNCH | R KICK     P2 MOVE ARROWS | . PUNCH | SHIFT KICK", 0.93f, 0.95f, 0.99f);
+        drawText(34, HEIGHT - 52, "SESSION: " + networkStatus, 0.78f, 0.86f, 0.97f);
 
         if (winner != 0) {
             drawRectPx(330, 250, 620, 180, 0.04f, 0.05f, 0.07f, 0.92f);
@@ -481,15 +616,6 @@ public class FightingGameLWJGL {
             drawText(530, 318, "PLAYER " + winner + " WINS", 1.0f, 1.0f, 1.0f);
             drawText(430, 356, "PRESS ENTER TO RETURN TO CHARACTER SELECT", 0.94f, 0.94f, 0.98f);
         }
-
-        // new overlay with boxes like smash bros, navigate with keyboard, show ready status, and show win screen with option to return to char select
-        // for array of possible characters, draw box with name and image
-        for (int i = 0; i < models.size(); i++) {
-            float[] color = models.get(i).color();
-            drawRectPx(20 + i * 110, HEIGHT - 120, 100, 100, color[0], color[1], color[2], 0.9f);
-            drawText(30 + i * 110, HEIGHT - 90, models.get(i).name(), 0.08f, 0.08f, 0.08f);
-        }
-        drawRectPx(20,20,20,20,1.0f,1.0f,1.0f,0.95f);
 
         endOverlay();
     }
@@ -638,10 +764,391 @@ public class FightingGameLWJGL {
         FIGHT
     }
 
+    private enum NetworkMode {
+        OFFLINE,
+        HOST,
+        CLIENT
+    }
+
     private enum AttackType {
         NONE,
         PUNCH,
         KICK
+    }
+
+    private static final class PlayerInput {
+        final boolean left;
+        final boolean right;
+        final boolean up;
+        final boolean down;
+        final boolean punchPressed;
+        final boolean kickPressed;
+        final boolean readyToggle;
+        final boolean selectLeft;
+        final boolean selectRight;
+        final boolean confirm;
+
+        private PlayerInput(
+            boolean left,
+            boolean right,
+            boolean up,
+            boolean down,
+            boolean punchPressed,
+            boolean kickPressed,
+            boolean readyToggle,
+            boolean selectLeft,
+            boolean selectRight,
+            boolean confirm
+        ) {
+            this.left = left;
+            this.right = right;
+            this.up = up;
+            this.down = down;
+            this.punchPressed = punchPressed;
+            this.kickPressed = kickPressed;
+            this.readyToggle = readyToggle;
+            this.selectLeft = selectLeft;
+            this.selectRight = selectRight;
+            this.confirm = confirm;
+        }
+
+        static PlayerInput of(
+            boolean left,
+            boolean right,
+            boolean up,
+            boolean down,
+            boolean punchPressed,
+            boolean kickPressed,
+            boolean readyToggle,
+            boolean selectLeft,
+            boolean selectRight,
+            boolean confirm
+        ) {
+            return new PlayerInput(left, right, up, down, punchPressed, kickPressed, readyToggle, selectLeft, selectRight, confirm);
+        }
+
+        static PlayerInput empty() {
+            return new PlayerInput(false, false, false, false, false, false, false, false, false, false);
+        }
+
+        String toWire() {
+            return bool(left) + "|" + bool(right) + "|" + bool(up) + "|" + bool(down) + "|"
+                + bool(punchPressed) + "|" + bool(kickPressed) + "|" + bool(readyToggle) + "|"
+                + bool(selectLeft) + "|" + bool(selectRight) + "|" + bool(confirm);
+        }
+
+        static PlayerInput fromWire(String[] parts, int offset) {
+            return new PlayerInput(
+                parseBool(parts[offset]),
+                parseBool(parts[offset + 1]),
+                parseBool(parts[offset + 2]),
+                parseBool(parts[offset + 3]),
+                parseBool(parts[offset + 4]),
+                parseBool(parts[offset + 5]),
+                parseBool(parts[offset + 6]),
+                parseBool(parts[offset + 7]),
+                parseBool(parts[offset + 8]),
+                parseBool(parts[offset + 9])
+            );
+        }
+
+        private static String bool(boolean b) {
+            return b ? "1" : "0";
+        }
+    }
+
+    private record FighterSnapshot(
+        int selected,
+        boolean ready,
+        float x,
+        float z,
+        float facing,
+        int health,
+        int attackOrdinal,
+        int attackTimer,
+        int cooldown
+    ) {
+        static FighterSnapshot of(Fighter f) {
+            return new FighterSnapshot(
+                f.selected, f.ready, f.x, f.z, f.facing, f.health,
+                f.attack.ordinal(), f.attackTimer, f.cooldown
+            );
+        }
+
+        void applyTo(Fighter f) {
+            f.selected = selected;
+            f.ready = ready;
+            f.x = x;
+            f.z = z;
+            f.facing = facing;
+            f.health = health;
+            f.attack = AttackType.values()[Math.max(0, Math.min(AttackType.values().length - 1, attackOrdinal))];
+            f.attackTimer = attackTimer;
+            f.cooldown = cooldown;
+            f.hitApplied = false;
+        }
+
+        String toWire() {
+            return selected + "|" + (ready ? 1 : 0) + "|" + x + "|" + z + "|" + facing + "|" + health + "|"
+                + attackOrdinal + "|" + attackTimer + "|" + cooldown;
+        }
+
+        static FighterSnapshot fromWire(String[] parts, int offset) {
+            return new FighterSnapshot(
+                Integer.parseInt(parts[offset]),
+                parseBool(parts[offset + 1]),
+                Float.parseFloat(parts[offset + 2]),
+                Float.parseFloat(parts[offset + 3]),
+                Float.parseFloat(parts[offset + 4]),
+                Integer.parseInt(parts[offset + 5]),
+                Integer.parseInt(parts[offset + 6]),
+                Integer.parseInt(parts[offset + 7]),
+                Integer.parseInt(parts[offset + 8])
+            );
+        }
+    }
+
+    private record GameSnapshot(int stateOrdinal, int winner, FighterSnapshot p1, FighterSnapshot p2) {
+        static GameSnapshot capture(GameState state, int winner, Fighter p1, Fighter p2) {
+            return new GameSnapshot(state.ordinal(), winner, FighterSnapshot.of(p1), FighterSnapshot.of(p2));
+        }
+
+        void applyTo(FightingGameLWJGL game) {
+            game.gameState = GameState.values()[Math.max(0, Math.min(GameState.values().length - 1, stateOrdinal))];
+            game.winner = winner;
+            p1.applyTo(game.p1);
+            p2.applyTo(game.p2);
+        }
+
+        String toWire(int slot) {
+            return "SNAP|" + slot + "|" + stateOrdinal + "|" + winner + "|" + p1.toWire() + "|" + p2.toWire();
+        }
+
+        static GameSnapshot fromWire(String[] parts) {
+            int state = Integer.parseInt(parts[2]);
+            int winner = Integer.parseInt(parts[3]);
+            FighterSnapshot p1 = FighterSnapshot.fromWire(parts, 4);
+            FighterSnapshot p2 = FighterSnapshot.fromWire(parts, 13);
+            return new GameSnapshot(state, winner, p1, p2);
+        }
+    }
+
+    private static final class HostSession {
+        private final int port;
+        private final CopyOnWriteArrayList<ClientPeer> peers = new CopyOnWriteArrayList<>();
+        private final AtomicReference<PlayerInput> latestP2Input = new AtomicReference<>(PlayerInput.empty());
+        private final AtomicBoolean running = new AtomicBoolean(false);
+        private ServerSocket serverSocket;
+        private Thread acceptThread;
+
+        private HostSession(int port) {
+            this.port = port;
+        }
+
+        void start() throws IOException {
+            serverSocket = new ServerSocket();
+            serverSocket.bind(new InetSocketAddress(port));
+            running.set(true);
+            acceptThread = new Thread(this::acceptLoop, "fg-host-accept");
+            acceptThread.setDaemon(true);
+            acceptThread.start();
+        }
+
+        private void acceptLoop() {
+            while (running.get()) {
+                try {
+                    Socket socket = serverSocket.accept();
+                    socket.setTcpNoDelay(true);
+                    int slot = hasSlot2Peer() ? 0 : 2;
+                    ClientPeer peer = new ClientPeer(socket, slot);
+                    peers.add(peer);
+                    peer.start();
+                } catch (IOException e) {
+                    if (running.get()) {
+                        // ignore and continue accepting when possible
+                    }
+                }
+            }
+        }
+
+        private boolean hasSlot2Peer() {
+            for (ClientPeer peer : peers) {
+                if (peer.slot == 2 && peer.connected.get()) return true;
+            }
+            return false;
+        }
+
+        PlayerInput consumeP2Input() {
+            return latestP2Input.getAndSet(PlayerInput.empty());
+        }
+
+        void broadcastSnapshot(GameSnapshot snapshot) {
+            for (ClientPeer peer : peers) {
+                if (peer.connected.get()) {
+                    peer.send(snapshot.toWire(peer.slot));
+                }
+            }
+        }
+
+        int getClientCount() {
+            int count = 0;
+            for (ClientPeer peer : peers) {
+                if (peer.connected.get()) count++;
+            }
+            return count;
+        }
+
+        void close() {
+            running.set(false);
+            if (acceptThread != null) {
+                acceptThread.interrupt();
+            }
+            for (ClientPeer peer : peers) {
+                peer.close();
+            }
+            if (serverSocket != null) {
+                try {
+                    serverSocket.close();
+                } catch (IOException ignored) {
+                }
+            }
+        }
+
+        private final class ClientPeer {
+            private final Socket socket;
+            private final int slot;
+            private final AtomicBoolean connected = new AtomicBoolean(true);
+            private final AtomicReference<PrintWriter> out = new AtomicReference<>();
+            private Thread readThread;
+
+            private ClientPeer(Socket socket, int slot) {
+                this.socket = socket;
+                this.slot = slot;
+            }
+
+            void start() throws IOException {
+                PrintWriter writer = new PrintWriter(socket.getOutputStream(), true);
+                out.set(writer);
+                writer.println("WELCOME|" + slot);
+
+                readThread = new Thread(() -> {
+                    try (BufferedReader reader = new BufferedReader(new InputStreamReader(socket.getInputStream()))) {
+                        String line;
+                        while ((line = reader.readLine()) != null) {
+                            String[] parts = line.split("\\|");
+                            if (parts.length < 11 || !"INPUT".equals(parts[0])) continue;
+                            if (slot == 2) {
+                                latestP2Input.set(PlayerInput.fromWire(parts, 1));
+                            }
+                        }
+                    } catch (IOException ignored) {
+                    } finally {
+                        close();
+                    }
+                }, "fg-host-peer-read-" + slot);
+                readThread.setDaemon(true);
+                readThread.start();
+            }
+
+            void send(String line) {
+                PrintWriter writer = out.get();
+                if (writer != null) writer.println(line);
+            }
+
+            void close() {
+                connected.set(false);
+                out.set(null);
+                try {
+                    socket.close();
+                } catch (IOException ignored) {
+                }
+            }
+        }
+    }
+
+    private static final class ClientSession {
+        private final String host;
+        private final int port;
+        private final AtomicReference<GameSnapshot> latestSnapshot = new AtomicReference<>();
+        private final AtomicBoolean connected = new AtomicBoolean(false);
+        private volatile int assignedSlot = 2;
+        private Socket socket;
+        private PrintWriter writer;
+        private Thread readThread;
+
+        private ClientSession(String host, int port) {
+            this.host = host;
+            this.port = port;
+        }
+
+        void connect() throws IOException {
+            socket = new Socket();
+            socket.connect(new InetSocketAddress(host, port), 3000);
+            socket.setTcpNoDelay(true);
+            writer = new PrintWriter(socket.getOutputStream(), true);
+            connected.set(true);
+
+            readThread = new Thread(() -> {
+                try (BufferedReader reader = new BufferedReader(new InputStreamReader(socket.getInputStream()))) {
+                    String line;
+                    while ((line = reader.readLine()) != null) {
+                        String[] parts = line.split("\\|");
+                        if (parts.length < 2) continue;
+                        if ("WELCOME".equals(parts[0])) {
+                            assignedSlot = Integer.parseInt(parts[1]);
+                        } else if ("SNAP".equals(parts[0]) && parts.length >= 22) {
+                            assignedSlot = Integer.parseInt(parts[1]);
+                            latestSnapshot.set(GameSnapshot.fromWire(parts));
+                        }
+                    }
+                } catch (IOException ignored) {
+                } finally {
+                    connected.set(false);
+                }
+            }, "fg-client-read");
+            readThread.setDaemon(true);
+            readThread.start();
+        }
+
+        int getAssignedSlot() {
+            return assignedSlot;
+        }
+
+        void sendInput(PlayerInput input) {
+            if (!connected.get() || writer == null) return;
+            writer.println("INPUT|" + input.toWire());
+        }
+
+        GameSnapshot consumeSnapshot() {
+            return latestSnapshot.getAndSet(null);
+        }
+
+        String statusText() {
+            if (!connected.get()) {
+                return "DISCONNECTED " + host + ":" + port;
+            }
+            if (assignedSlot == 0) {
+                return "CONNECTED AS SPECTATOR";
+            }
+            return "CONNECTED AS P" + assignedSlot;
+        }
+
+        void close() {
+            connected.set(false);
+            if (readThread != null) {
+                readThread.interrupt();
+            }
+            if (socket != null) {
+                try {
+                    socket.close();
+                } catch (IOException ignored) {
+                }
+            }
+        }
+    }
+
+    private static boolean parseBool(String raw) {
+        return "1".equals(raw) || "true".equalsIgnoreCase(raw);
     }
 
     private static final class Fighter {
