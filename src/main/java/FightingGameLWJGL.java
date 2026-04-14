@@ -78,8 +78,16 @@ public class FightingGameLWJGL {
     private HostSession hostSession;
     private ClientSession clientSession;
     private String networkStatus = "LOCAL";
+    private GameMode gameMode = GameMode.MULTIPLAYER;
+    private int modeSelectionIndex = 0;
+    private int multiplayerRoleIndex = 0;
+    private int aiDecisionTimer = 0;
+    private int aiAttackCooldown = 0;
+    private float aiStrafeBias = 0.0f;
+    private String joinHost = "127.0.0.1";
+    private int joinPort = 7777;
 
-    private GameState gameState = GameState.CHAR_SELECT;
+    private GameState gameState = GameState.MODE_SELECT;
     private int winner = 0;
 
     public static void main(String[] args) {
@@ -97,6 +105,20 @@ public class FightingGameLWJGL {
 
             p1.selected = 0;
             p2.selected = models.size() > 1 ? 1 : 0;
+            p1.ready = false;
+            p2.ready = false;
+
+            if (networkMode != NetworkMode.OFFLINE) {
+                gameMode = GameMode.MULTIPLAYER;
+                gameState = GameState.MULTIPLAYER_WAITING;
+                if (networkMode == NetworkMode.HOST) {
+                    networkStatus = "HOST " + hostSession.port + " | waiting for player to connect";
+                } else if (networkMode == NetworkMode.CLIENT) {
+                    networkStatus = "JOIN " + joinHost + ":" + joinPort + " | connecting";
+                }
+            } else {
+                gameState = GameState.MODE_SELECT;
+            }
 
             startNetworkIfNeeded();
             loop();
@@ -123,6 +145,7 @@ public class FightingGameLWJGL {
         if ("--host".equalsIgnoreCase(args[0])) {
             networkMode = NetworkMode.HOST;
             int port = args.length >= 2 ? Integer.parseInt(args[1]) : 7777;
+            joinPort = port;
             hostSession = new HostSession(port);
             networkStatus = "HOST " + port;
             return;
@@ -139,6 +162,8 @@ public class FightingGameLWJGL {
             }
             String host = hp[0];
             int port = Integer.parseInt(hp[1]);
+            joinHost = host;
+            joinPort = port;
             clientSession = new ClientSession(host, port);
             networkStatus = "JOIN " + host + ":" + port;
             return;
@@ -193,24 +218,124 @@ public class FightingGameLWJGL {
             updateClientOnly();
         } else {
             PlayerInput p1Input = collectP1Input();
-            PlayerInput p2Input = networkMode == NetworkMode.HOST
-                ? hostSession.consumeP2Input()
-                : collectP2Input();
+            PlayerInput p2Input;
+            if (networkMode == NetworkMode.HOST) {
+                p2Input = hostSession.consumeP2Input();
+            } else if (gameMode == GameMode.SINGLE_PLAYER && gameState == GameState.FIGHT) {
+                p2Input = buildAiInput();
+            } else if (gameMode == GameMode.SINGLE_PLAYER) {
+                p2Input = PlayerInput.empty();
+            } else {
+                p2Input = collectP2Input();
+            }
 
-            if (gameState == GameState.CHAR_SELECT) {
+            if (gameState == GameState.MODE_SELECT) {
+                updateModeSelect(p1Input);
+            } else if (gameState == GameState.MULTIPLAYER_ROLE_SELECT) {
+                updateMultiplayerRoleSelect(p1Input);
+            } else if (gameState == GameState.MULTIPLAYER_WAITING) {
+                updateMultiplayerWaiting();
+            } else if (gameState == GameState.CHAR_SELECT) {
                 updateCharacterSelectWithInput(p1Input, p2Input);
             } else {
                 updateFightWithInput(p1Input, p2Input);
             }
 
             if (networkMode == NetworkMode.HOST) {
+                if (!hostSession.hasActivePlayerTwo()) {
+                    if (gameState != GameState.MULTIPLAYER_WAITING) {
+                        p1.ready = false;
+                        p2.ready = false;
+                        winner = 0;
+                        gameState = GameState.MULTIPLAYER_WAITING;
+                    }
+                }
                 hostSession.broadcastSnapshot(GameSnapshot.capture(gameState, winner, p1, p2));
-                networkStatus = "HOST " + hostSession.port + " | connected " + hostSession.getClientCount();
+                if (hostSession.hasActivePlayerTwo()) {
+                    networkStatus = "HOST " + hostSession.port + " | player connected";
+                } else {
+                    networkStatus = "HOST " + hostSession.port + " | waiting for player to connect";
+                }
             }
         }
 
         if (isPressed(GLFW_KEY_ESCAPE)) {
             glfwSetWindowShouldClose(window, true);
+        }
+    }
+
+    private void updateModeSelect(PlayerInput p1Input) {
+        if (p1Input.selectLeft || p1Input.selectRight) {
+            modeSelectionIndex = 1 - modeSelectionIndex;
+        }
+        if (p1Input.confirm || p1Input.readyToggle) {
+            gameMode = modeSelectionIndex == 0 ? GameMode.SINGLE_PLAYER : GameMode.MULTIPLAYER;
+            p1.ready = false;
+            p2.ready = false;
+            p2.selected = models.size() > 1 ? wrap(p1.selected + 1, models.size()) : p1.selected;
+            if (gameMode == GameMode.SINGLE_PLAYER) {
+                networkMode = NetworkMode.OFFLINE;
+                networkStatus = "LOCAL";
+                gameState = GameState.CHAR_SELECT;
+            } else {
+                networkMode = NetworkMode.OFFLINE;
+                networkStatus = "MULTIPLAYER";
+                multiplayerRoleIndex = 0;
+                gameState = GameState.MULTIPLAYER_ROLE_SELECT;
+            }
+        }
+        glfwSetWindowTitle(window, "MODE SELECT | " + (modeSelectionIndex == 0 ? "SINGLE PLAYER" : "MULTIPLAYER"));
+    }
+
+    private void updateMultiplayerRoleSelect(PlayerInput p1Input) {
+        if (p1Input.selectLeft || p1Input.selectRight) {
+            multiplayerRoleIndex = 1 - multiplayerRoleIndex;
+        }
+        if (!(p1Input.confirm || p1Input.readyToggle)) {
+            glfwSetWindowTitle(window, "MULTIPLAYER | Select Host or Join");
+            return;
+        }
+
+        p1.ready = false;
+        p2.ready = false;
+        winner = 0;
+        closeNetwork();
+        hostSession = null;
+        clientSession = null;
+
+        if (multiplayerRoleIndex == 0) {
+            try {
+                networkMode = NetworkMode.HOST;
+                hostSession = new HostSession(joinPort);
+                hostSession.start();
+                networkStatus = "HOST " + joinPort + " | waiting for player to connect";
+                gameState = GameState.MULTIPLAYER_WAITING;
+            } catch (IOException e) {
+                networkMode = NetworkMode.OFFLINE;
+                networkStatus = "HOST START FAILED";
+            }
+        } else {
+            try {
+                networkMode = NetworkMode.CLIENT;
+                clientSession = new ClientSession(joinHost, joinPort);
+                clientSession.connect();
+                networkStatus = "JOIN " + joinHost + ":" + joinPort + " | connecting";
+                gameState = GameState.MULTIPLAYER_WAITING;
+            } catch (IOException e) {
+                networkMode = NetworkMode.OFFLINE;
+                networkStatus = "JOIN FAILED";
+            }
+        }
+    }
+
+    private void updateMultiplayerWaiting() {
+        if (networkMode == NetworkMode.HOST && hostSession != null && hostSession.hasActivePlayerTwo()) {
+            p1.ready = false;
+            p2.ready = false;
+            gameState = GameState.CHAR_SELECT;
+        }
+        if (networkMode == NetworkMode.OFFLINE) {
+            gameState = GameState.MULTIPLAYER_ROLE_SELECT;
         }
     }
 
@@ -223,24 +348,29 @@ public class FightingGameLWJGL {
             p1.selected = wrap(p1.selected + 1, models.size());
             p1.ready = false;
         }
-        if (p2Input.selectLeft) {
+        if (gameMode == GameMode.MULTIPLAYER && p2Input.selectLeft) {
             p2.selected = wrap(p2.selected - 1, models.size());
             p2.ready = false;
         }
-        if (p2Input.selectRight) {
+        if (gameMode == GameMode.MULTIPLAYER && p2Input.selectRight) {
             p2.selected = wrap(p2.selected + 1, models.size());
             p2.ready = false;
         }
 
         if (p1Input.readyToggle) p1.ready = !p1.ready;
-        if (p2Input.readyToggle) p2.ready = !p2.ready;
+        if (gameMode == GameMode.MULTIPLAYER && p2Input.readyToggle) p2.ready = !p2.ready;
+        if (gameMode == GameMode.SINGLE_PLAYER) p2.ready = true;
 
         if (p1.ready && p2.ready) {
             startRound();
         }
 
+        String p2Name = gameMode == GameMode.SINGLE_PLAYER
+            ? models.get(p2.selected).name() + " [AI]"
+            : models.get(p2.selected).name() + (p2.ready ? " [READY]" : " [NOT READY]");
+
         String title = "CHAR SELECT | P1: " + models.get(p1.selected).name() + (p1.ready ? " [READY]" : " [NOT READY]")
-            + " | P2: " + models.get(p2.selected).name() + (p2.ready ? " [READY]" : " [NOT READY]")
+            + " | P2: " + p2Name
             + " | " + networkStatus;
         glfwSetWindowTitle(window, title);
     }
@@ -265,6 +395,9 @@ public class FightingGameLWJGL {
         p2.cooldown = 0;
         p1.hitApplied = false;
         p2.hitApplied = false;
+        aiDecisionTimer = 0;
+        aiAttackCooldown = 0;
+        aiStrafeBias = 0.0f;
 
         winner = 0;
         gameState = GameState.FIGHT;
@@ -274,7 +407,7 @@ public class FightingGameLWJGL {
         if (winner != 0) {
             if (p1Input.confirm || p2Input.confirm) {
                 p1.ready = false;
-                p2.ready = false;
+                p2.ready = gameMode == GameMode.SINGLE_PLAYER;
                 gameState = GameState.CHAR_SELECT;
             }
             glfwSetWindowTitle(window, "FIGHT OVER | Winner: P" + winner + " | Press ENTER to return | " + networkStatus);
@@ -353,6 +486,8 @@ public class FightingGameLWJGL {
     }
 
     private PlayerInput collectP1Input() {
+        boolean leftPressed = isPressed(GLFW_KEY_A) || isPressed(GLFW_KEY_LEFT);
+        boolean rightPressed = isPressed(GLFW_KEY_D) || isPressed(GLFW_KEY_RIGHT);
         return PlayerInput.of(
             isDown(GLFW_KEY_A),
             isDown(GLFW_KEY_D),
@@ -361,8 +496,8 @@ public class FightingGameLWJGL {
             isPressed(GLFW_KEY_F),
             isPressed(GLFW_KEY_R),
             isPressed(GLFW_KEY_F),
-            isPressed(GLFW_KEY_A),
-            isPressed(GLFW_KEY_D),
+            leftPressed,
+            rightPressed,
             isPressed(GLFW_KEY_ENTER)
         );
     }
@@ -391,6 +526,65 @@ public class FightingGameLWJGL {
             return collectP2Input();
         }
         return PlayerInput.empty();
+    }
+
+    private PlayerInput buildAiInput() {
+        if (aiAttackCooldown > 0) aiAttackCooldown--;
+        if (aiDecisionTimer > 0) aiDecisionTimer--;
+        if (aiDecisionTimer <= 0) {
+            aiDecisionTimer = 16;
+            aiStrafeBias = (float) Math.sin(glfwGetTime() * 1.7) * 0.55f;
+        }
+
+        float dx = p1.x - p2.x;
+        float dz = p1.z - p2.z;
+        float dist = (float) Math.sqrt(dx * dx + dz * dz);
+
+        boolean moveLeft = false;
+        boolean moveRight = false;
+        boolean moveUp = false;
+        boolean moveDown = false;
+
+        if (Math.abs(dx) > 0.18f) {
+            if (dx < 0) moveLeft = true;
+            if (dx > 0) moveRight = true;
+        }
+        if (dist > 1.35f) {
+            if (dz < -0.10f) moveUp = true;
+            if (dz > 0.10f) moveDown = true;
+        } else if (dist < 0.95f) {
+            if (dz < 0) moveDown = true;
+            if (dz > 0) moveUp = true;
+        } else {
+            if (aiStrafeBias < -0.15f) moveUp = true;
+            if (aiStrafeBias > 0.15f) moveDown = true;
+        }
+
+        boolean punch = false;
+        boolean kick = false;
+        if (aiAttackCooldown == 0 && dist < 1.72f) {
+            if (dist > 1.25f) {
+                kick = true;
+            } else {
+                double t = glfwGetTime();
+                punch = (Math.sin(t * 2.3) > -0.15);
+                kick = !punch;
+            }
+            aiAttackCooldown = kick ? 28 : 20;
+        }
+
+        return PlayerInput.of(
+            moveLeft,
+            moveRight,
+            moveUp,
+            moveDown,
+            punch,
+            kick,
+            false,
+            false,
+            false,
+            false
+        );
     }
 
     private void updateAttackState(Fighter fighter, boolean punchPressed, boolean kickPressed) {
@@ -454,7 +648,19 @@ public class FightingGameLWJGL {
 
         drawArena();
 
-        if (gameState == GameState.CHAR_SELECT) {
+        if (gameState == GameState.MODE_SELECT) {
+            drawFighterPreview(-1.7f, 0.0f, p1.selected, false, (float) (glfwGetTime() * 22.0));
+            drawFighterPreview(1.7f, 0.0f, p2.selected, false, (float) (180.0 + glfwGetTime() * 22.0));
+            drawModeSelectOverlay();
+        } else if (gameState == GameState.MULTIPLAYER_ROLE_SELECT) {
+            drawFighterPreview(-1.7f, 0.0f, p1.selected, false, (float) (glfwGetTime() * 22.0));
+            drawFighterPreview(1.7f, 0.0f, p2.selected, false, (float) (180.0 + glfwGetTime() * 22.0));
+            drawMultiplayerRoleSelectOverlay();
+        } else if (gameState == GameState.MULTIPLAYER_WAITING) {
+            drawFighterPreview(-1.7f, 0.0f, p1.selected, false, (float) (glfwGetTime() * 18.0));
+            drawFighterPreview(1.7f, 0.0f, p2.selected, false, (float) (180.0 + glfwGetTime() * 18.0));
+            drawMultiplayerWaitingOverlay();
+        } else if (gameState == GameState.CHAR_SELECT) {
             drawFighterPreview(-2.1f, 0.0f, p1.selected, p1.ready, (float) (glfwGetTime() * 35.0));
             drawFighterPreview(2.1f, 0.0f, p2.selected, p2.ready, (float) (180.0 + glfwGetTime() * 35.0));
             drawCharSelectOverlay();
@@ -549,14 +755,21 @@ public class FightingGameLWJGL {
         beginOverlay();
 
         drawRectPx(20, 20, WIDTH - 40, 48, 0.07f, 0.09f, 0.13f, 0.82f);
-        drawText(36, 36, "CHARACTER SELECT - P1 A/D + F READY | P2 LEFT/RIGHT + SHIFT READY", 1.0f, 1.0f, 1.0f);
+        if (gameMode == GameMode.SINGLE_PLAYER) {
+            drawText(36, 36, "CHARACTER SELECT - SINGLE PLAYER | P1 A/D + F READY | P2 IS AI", 1.0f, 1.0f, 1.0f);
+        } else {
+            drawText(36, 36, "CHARACTER SELECT - MULTIPLAYER | P1 A/D + F READY | P2 LEFT/RIGHT + SHIFT READY", 1.0f, 1.0f, 1.0f);
+        }
         drawText(36, 56, "SESSION: " + networkStatus, 0.78f, 0.86f, 0.97f);
 
         drawRectPx(80, 620, 430, 34, p1.ready ? 0.30f : 0.78f, p1.ready ? 0.86f : 0.50f, p1.ready ? 0.48f : 0.36f, 0.95f);
         drawRectPx(WIDTH - 510, 620, 430, 34, p2.ready ? 0.30f : 0.78f, p2.ready ? 0.86f : 0.50f, p2.ready ? 0.48f : 0.36f, 0.95f);
 
         drawText(92, 643, "P1: " + models.get(p1.selected).name() + (p1.ready ? " READY" : " NOT READY"), 0.08f, 0.08f, 0.08f);
-        drawText(WIDTH - 498, 643, "P2: " + models.get(p2.selected).name() + (p2.ready ? " READY" : " NOT READY"), 0.08f, 0.08f, 0.08f);
+        String p2Label = gameMode == GameMode.SINGLE_PLAYER
+            ? "P2(AI): " + models.get(p2.selected).name() + " READY"
+            : "P2: " + models.get(p2.selected).name() + (p2.ready ? " READY" : " NOT READY");
+        drawText(WIDTH - 498, 643, p2Label, 0.08f, 0.08f, 0.08f);
 
         drawCharacterPortraitPlaceholders();
 
@@ -607,7 +820,11 @@ public class FightingGameLWJGL {
         drawText(WIDTH - 445, 17, "P2 " + models.get(p2.selected).name() + " HP " + p2.health, 1.0f, 1.0f, 1.0f);
 
         drawRectPx(20, HEIGHT - 62, WIDTH - 40, 42, 0.05f, 0.07f, 0.10f, 0.86f);
-        drawText(34, HEIGHT - 36, "P1 MOVE WASD | F PUNCH | R KICK     P2 MOVE ARROWS | . PUNCH | SHIFT KICK", 0.93f, 0.95f, 0.99f);
+        if (gameMode == GameMode.SINGLE_PLAYER) {
+            drawText(34, HEIGHT - 36, "P1 MOVE WASD | F PUNCH | R KICK     P2 AI CONTROLLED", 0.93f, 0.95f, 0.99f);
+        } else {
+            drawText(34, HEIGHT - 36, "P1 MOVE WASD | F PUNCH | R KICK     P2 MOVE ARROWS | . PUNCH | SHIFT KICK", 0.93f, 0.95f, 0.99f);
+        }
         drawText(34, HEIGHT - 52, "SESSION: " + networkStatus, 0.78f, 0.86f, 0.97f);
 
         if (winner != 0) {
@@ -617,6 +834,101 @@ public class FightingGameLWJGL {
             drawText(430, 356, "PRESS ENTER TO RETURN TO CHARACTER SELECT", 0.94f, 0.94f, 0.98f);
         }
 
+        endOverlay();
+    }
+
+    private void drawModeSelectOverlay() {
+        beginOverlay();
+
+        drawRectPx(140, 90, WIDTH - 280, 110, 0.05f, 0.07f, 0.10f, 0.90f);
+        drawText(370, 140, "SELECT GAME MODE", 0.96f, 0.98f, 1.0f);
+        drawText(210, 172, "A/D OR LEFT/RIGHT TO SWITCH  |  ENTER OR F TO CONFIRM", 0.82f, 0.90f, 0.98f);
+
+        int y = 270;
+        int boxW = 460;
+        int boxH = 110;
+        int leftX = 150;
+        int rightX = WIDTH - leftX - boxW;
+
+        boolean singleSelected = modeSelectionIndex == 0;
+        boolean multiSelected = modeSelectionIndex == 1;
+
+        drawRectPx(leftX, y, boxW, boxH, singleSelected ? 0.18f : 0.08f, singleSelected ? 0.62f : 0.14f, singleSelected ? 0.36f : 0.20f, 0.95f);
+        drawRectPx(rightX, y, boxW, boxH, multiSelected ? 0.19f : 0.08f, multiSelected ? 0.40f : 0.14f, multiSelected ? 0.66f : 0.20f, 0.95f);
+
+        if (singleSelected) {
+            drawRectOutlinePx(leftX - 4, y - 4, boxW + 8, boxH + 8, 3, 0.46f, 0.93f, 0.66f, 0.98f);
+        }
+        if (multiSelected) {
+            drawRectOutlinePx(rightX - 4, y - 4, boxW + 8, boxH + 8, 3, 0.54f, 0.78f, 0.98f, 0.98f);
+        }
+
+        drawText(leftX + 122, y + 50, "SINGLE PLAYER", 0.95f, 1.0f, 0.97f);
+        drawText(leftX + 48, y + 82, "LOCAL HUMAN VS AI-CONTROLLED OPPONENT", 0.83f, 0.92f, 0.88f);
+
+        drawText(rightX + 130, y + 50, "MULTIPLAYER", 0.95f, 0.98f, 1.0f);
+        drawText(rightX + 54, y + 82, "LOCAL 2P OR NETWORK HOST/JOIN SESSION", 0.84f, 0.90f, 0.97f);
+
+        drawRectPx(180, HEIGHT - 120, WIDTH - 360, 60, 0.06f, 0.08f, 0.12f, 0.88f);
+        drawText(208, HEIGHT - 84, "CURRENT SESSION: " + networkStatus, 0.79f, 0.87f, 0.97f);
+
+        endOverlay();
+    }
+
+    private void drawMultiplayerRoleSelectOverlay() {
+        beginOverlay();
+
+        drawRectPx(140, 90, WIDTH - 280, 110, 0.05f, 0.07f, 0.10f, 0.90f);
+        drawText(280, 140, "MULTIPLAYER - SELECT HOST OR JOIN", 0.96f, 0.98f, 1.0f);
+        drawText(220, 172, "A/D OR LEFT/RIGHT TO SWITCH  |  ENTER OR F TO CONFIRM", 0.82f, 0.90f, 0.98f);
+
+        int y = 270;
+        int boxW = 460;
+        int boxH = 120;
+        int leftX = 150;
+        int rightX = WIDTH - leftX - boxW;
+        boolean hostSelected = multiplayerRoleIndex == 0;
+        boolean joinSelected = multiplayerRoleIndex == 1;
+
+        drawRectPx(leftX, y, boxW, boxH, hostSelected ? 0.20f : 0.08f, hostSelected ? 0.43f : 0.14f, hostSelected ? 0.64f : 0.20f, 0.95f);
+        drawRectPx(rightX, y, boxW, boxH, joinSelected ? 0.21f : 0.08f, joinSelected ? 0.60f : 0.14f, joinSelected ? 0.34f : 0.20f, 0.95f);
+
+        if (hostSelected) drawRectOutlinePx(leftX - 4, y - 4, boxW + 8, boxH + 8, 3, 0.60f, 0.82f, 1.0f, 0.98f);
+        if (joinSelected) drawRectOutlinePx(rightX - 4, y - 4, boxW + 8, boxH + 8, 3, 0.58f, 0.98f, 0.76f, 0.98f);
+
+        drawText(leftX + 190, y + 50, "HOST GAME", 0.95f, 0.98f, 1.0f);
+        drawText(leftX + 72, y + 82, "CREATE LOBBY AND WAIT FOR PLAYER 2", 0.84f, 0.90f, 0.98f);
+        drawText(leftX + 120, y + 106, "PORT: " + joinPort, 0.80f, 0.87f, 0.96f);
+
+        drawText(rightX + 198, y + 50, "JOIN GAME", 0.95f, 1.0f, 0.96f);
+        drawText(rightX + 84, y + 82, "CONNECT TO HOST AND BECOME PLAYER 2", 0.86f, 0.94f, 0.88f);
+        drawText(rightX + 86, y + 106, "TARGET: " + joinHost + ":" + joinPort, 0.82f, 0.92f, 0.86f);
+
+        drawRectPx(180, HEIGHT - 120, WIDTH - 360, 60, 0.06f, 0.08f, 0.12f, 0.88f);
+        drawText(208, HEIGHT - 84, "SESSION: " + networkStatus, 0.79f, 0.87f, 0.97f);
+
+        endOverlay();
+    }
+
+    private void drawMultiplayerWaitingOverlay() {
+        beginOverlay();
+
+        drawRectPx(220, 170, WIDTH - 440, 300, 0.04f, 0.06f, 0.10f, 0.92f);
+        drawRectPx(240, 190, WIDTH - 480, 260, 0.10f, 0.14f, 0.22f, 0.90f);
+
+        if (networkMode == NetworkMode.HOST) {
+            drawText(340, 268, "WAITING FOR PLAYER TO CONNECT", 0.94f, 0.97f, 1.0f);
+            drawText(352, 305, "SHARE THIS ADDRESS WITH PLAYER 2", 0.84f, 0.91f, 0.98f);
+            drawText(396, 344, "HOST PORT: " + joinPort, 0.82f, 0.90f, 0.98f);
+        } else if (networkMode == NetworkMode.CLIENT) {
+            drawText(380, 268, "JOINING HOST...", 0.94f, 1.0f, 0.94f);
+            drawText(326, 305, "WAITING FOR HOST TO UNLOCK CHARACTER SELECT", 0.84f, 0.95f, 0.86f);
+            drawText(332, 344, "TARGET: " + joinHost + ":" + joinPort, 0.82f, 0.93f, 0.85f);
+        } else {
+            drawText(370, 286, "MULTIPLAYER NOT STARTED", 0.96f, 0.95f, 1.0f);
+        }
+
+        drawText(274, 414, "STATUS: " + networkStatus, 0.82f, 0.89f, 0.98f);
         endOverlay();
     }
 
@@ -760,8 +1072,16 @@ public class FightingGameLWJGL {
     }
 
     private enum GameState {
+        MODE_SELECT,
+        MULTIPLAYER_ROLE_SELECT,
+        MULTIPLAYER_WAITING,
         CHAR_SELECT,
         FIGHT
+    }
+
+    private enum GameMode {
+        SINGLE_PLAYER,
+        MULTIPLAYER
     }
 
     private enum NetworkMode {
@@ -996,6 +1316,15 @@ public class FightingGameLWJGL {
                 if (peer.connected.get()) count++;
             }
             return count;
+        }
+
+        boolean hasActivePlayerTwo() {
+            for (ClientPeer peer : peers) {
+                if (peer.slot == 2 && peer.connected.get()) {
+                    return true;
+                }
+            }
+            return false;
         }
 
         void close() {
