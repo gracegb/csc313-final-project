@@ -4,7 +4,12 @@ import org.lwjgl.opengl.GL;
 import org.lwjgl.stb.STBEasyFont;
 
 import javax.imageio.ImageIO;
+import javax.sound.sampled.AudioFormat;
+import javax.sound.sampled.AudioInputStream;
+import javax.sound.sampled.AudioSystem;
+import javax.sound.sampled.Clip;
 import java.awt.image.BufferedImage;
+import java.io.ByteArrayInputStream;
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
@@ -14,10 +19,13 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.EnumMap;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Stream;
@@ -86,6 +94,7 @@ public class FightingGameLWJGL {
     private float aiStrafeBias = 0.0f;
     private String joinHost = "127.0.0.1";
     private int joinPort = 7777;
+    private final SoundEngine sounds = new SoundEngine();
 
     private GameState gameState = GameState.MODE_SELECT;
     private int winner = 0;
@@ -126,6 +135,7 @@ public class FightingGameLWJGL {
             e.printStackTrace();
         } finally {
             closeNetwork();
+            sounds.shutdown();
             for (FighterModel model : models == null ? List.<FighterModel>of() : models) {
                 model.mesh().dispose();
             }
@@ -267,9 +277,11 @@ public class FightingGameLWJGL {
     private void updateModeSelect(PlayerInput p1Input) {
         if (p1Input.selectLeft || p1Input.selectRight) {
             modeSelectionIndex = 1 - modeSelectionIndex;
+            sounds.play(Sfx.UI_MOVE);
         }
         if (p1Input.confirm || p1Input.readyToggle) {
             gameMode = modeSelectionIndex == 0 ? GameMode.SINGLE_PLAYER : GameMode.MULTIPLAYER;
+            sounds.play(Sfx.UI_CONFIRM);
             p1.ready = false;
             p2.ready = false;
             p2.selected = models.size() > 1 ? wrap(p1.selected + 1, models.size()) : p1.selected;
@@ -290,11 +302,13 @@ public class FightingGameLWJGL {
     private void updateMultiplayerRoleSelect(PlayerInput p1Input) {
         if (p1Input.selectLeft || p1Input.selectRight) {
             multiplayerRoleIndex = 1 - multiplayerRoleIndex;
+            sounds.play(Sfx.UI_MOVE);
         }
         if (!(p1Input.confirm || p1Input.readyToggle)) {
             glfwSetWindowTitle(window, "MULTIPLAYER | Select Host or Join");
             return;
         }
+        sounds.play(Sfx.UI_CONFIRM);
 
         p1.ready = false;
         p2.ready = false;
@@ -343,22 +357,32 @@ public class FightingGameLWJGL {
         if (p1Input.selectLeft) {
             p1.selected = wrap(p1.selected - 1, models.size());
             p1.ready = false;
+            sounds.play(Sfx.UI_MOVE);
         }
         if (p1Input.selectRight) {
             p1.selected = wrap(p1.selected + 1, models.size());
             p1.ready = false;
+            sounds.play(Sfx.UI_MOVE);
         }
         if (gameMode == GameMode.MULTIPLAYER && p2Input.selectLeft) {
             p2.selected = wrap(p2.selected - 1, models.size());
             p2.ready = false;
+            sounds.play(Sfx.UI_MOVE);
         }
         if (gameMode == GameMode.MULTIPLAYER && p2Input.selectRight) {
             p2.selected = wrap(p2.selected + 1, models.size());
             p2.ready = false;
+            sounds.play(Sfx.UI_MOVE);
         }
 
-        if (p1Input.readyToggle) p1.ready = !p1.ready;
-        if (gameMode == GameMode.MULTIPLAYER && p2Input.readyToggle) p2.ready = !p2.ready;
+        if (p1Input.readyToggle) {
+            p1.ready = !p1.ready;
+            sounds.play(Sfx.UI_READY);
+        }
+        if (gameMode == GameMode.MULTIPLAYER && p2Input.readyToggle) {
+            p2.ready = !p2.ready;
+            sounds.play(Sfx.UI_READY);
+        }
         if (gameMode == GameMode.SINGLE_PLAYER) p2.ready = true;
 
         if (p1.ready && p2.ready) {
@@ -401,6 +425,7 @@ public class FightingGameLWJGL {
 
         winner = 0;
         gameState = GameState.FIGHT;
+        sounds.play(Sfx.ROUND_START);
     }
 
     private void updateFightWithInput(PlayerInput p1Input, PlayerInput p2Input) {
@@ -409,6 +434,7 @@ public class FightingGameLWJGL {
                 p1.ready = false;
                 p2.ready = gameMode == GameMode.SINGLE_PLAYER;
                 gameState = GameState.CHAR_SELECT;
+                sounds.play(Sfx.UI_CONFIRM);
             }
             glfwSetWindowTitle(window, "FIGHT OVER | Winner: P" + winner + " | Press ENTER to return | " + networkStatus);
             return;
@@ -445,10 +471,12 @@ public class FightingGameLWJGL {
 
         if (p1.health <= 0) {
             p1.health = 0;
+            if (winner == 0) sounds.play(Sfx.KO);
             winner = 2;
         }
         if (p2.health <= 0) {
             p2.health = 0;
+            if (winner == 0) sounds.play(Sfx.KO);
             winner = 1;
         }
 
@@ -606,6 +634,7 @@ public class FightingGameLWJGL {
             fighter.attackTimer = KICK_ACTIVE_FRAMES;
             fighter.cooldown = KICK_COOLDOWN;
             fighter.hitApplied = false;
+            sounds.play(Sfx.KICK);
             return;
         }
 
@@ -614,6 +643,7 @@ public class FightingGameLWJGL {
             fighter.attackTimer = PUNCH_ACTIVE_FRAMES;
             fighter.cooldown = PUNCH_COOLDOWN;
             fighter.hitApplied = false;
+            sounds.play(Sfx.PUNCH);
         }
     }
 
@@ -632,6 +662,7 @@ public class FightingGameLWJGL {
 
         defender.health -= (attacker.attack == AttackType.PUNCH ? PUNCH_DAMAGE : KICK_DAMAGE);
         attacker.hitApplied = true;
+        sounds.play(Sfx.HIT);
     }
 
     private void render() {
@@ -1082,6 +1113,166 @@ public class FightingGameLWJGL {
     private enum GameMode {
         SINGLE_PLAYER,
         MULTIPLAYER
+    }
+
+    private enum Sfx {
+        UI_MOVE("ui_move.wav", 760.0f, 45, 0.20f, 70),
+        UI_CONFIRM("ui_confirm.wav", 620.0f, 95, 0.24f, 90),
+        UI_READY("ui_ready.wav", 910.0f, 75, 0.22f, 110),
+        ROUND_START("round_start.wav", 520.0f, 140, 0.26f, 300),
+        PUNCH("punch.wav", 270.0f, 70, 0.20f, 80),
+        KICK("kick.wav", 200.0f, 95, 0.24f, 120),
+        HIT("hit.wav", 140.0f, 110, 0.28f, 95),
+        KO("ko.wav", 96.0f, 280, 0.30f, 500);
+
+        final String fileName;
+        final float frequency;
+        final int durationMs;
+        final float volume;
+        final int minGapMs;
+
+        Sfx(String fileName, float frequency, int durationMs, float volume, int minGapMs) {
+            this.fileName = fileName;
+            this.frequency = frequency;
+            this.durationMs = durationMs;
+            this.volume = volume;
+            this.minGapMs = minGapMs;
+        }
+    }
+
+    private static final class SoundEngine {
+        private static final float SAMPLE_RATE = 22050.0f;
+        private final AtomicBoolean enabled = new AtomicBoolean(true);
+        private final EnumMap<Sfx, byte[]> wavCache = new EnumMap<>(Sfx.class);
+        private final EnumMap<Sfx, byte[]> pcmCache = new EnumMap<>(Sfx.class);
+        private final EnumMap<Sfx, Long> lastQueuedAtNs = new EnumMap<>(Sfx.class);
+        private final BlockingQueue<Sfx> queue = new LinkedBlockingQueue<>();
+        private final Thread worker;
+
+        private SoundEngine() {
+            Path sfxRoot = resolveSfxRoot();
+            for (Sfx sfx : Sfx.values()) {
+                byte[] wav = tryLoadWav(sfxRoot, sfx.fileName);
+                if (wav != null) {
+                    wavCache.put(sfx, wav);
+                }
+                pcmCache.put(sfx, synthTone(sfx.frequency, sfx.durationMs, sfx.volume));
+                lastQueuedAtNs.put(sfx, 0L);
+            }
+            worker = new Thread(this::runWorker, "fg-sfx-worker");
+            worker.setDaemon(true);
+            worker.start();
+        }
+
+        void play(Sfx sfx) {
+            if (!enabled.get()) return;
+            long now = System.nanoTime();
+            long last = lastQueuedAtNs.getOrDefault(sfx, 0L);
+            long minGapNs = sfx.minGapMs * 1_000_000L;
+            if (now - last < minGapNs) return;
+            lastQueuedAtNs.put(sfx, now);
+            queue.offer(sfx);
+        }
+
+        void shutdown() {
+            enabled.set(false);
+            worker.interrupt();
+        }
+
+        private void runWorker() {
+            while (enabled.get()) {
+                try {
+                    Sfx sfx = queue.take();
+                    playInternal(sfx);
+                } catch (InterruptedException ignored) {
+                    break;
+                }
+            }
+        }
+
+        private void playInternal(Sfx sfx) {
+            byte[] wav = wavCache.get(sfx);
+            if (wav != null) {
+                if (playWavBytes(wav)) return;
+            }
+
+            byte[] pcm = pcmCache.get(sfx);
+            if (pcm != null) {
+                playPcmBytes(pcm);
+            }
+        }
+
+        private boolean playWavBytes(byte[] wavBytes) {
+            try (
+                ByteArrayInputStream bais = new ByteArrayInputStream(wavBytes);
+                AudioInputStream ais = AudioSystem.getAudioInputStream(bais)
+            ) {
+                Clip clip = AudioSystem.getClip();
+                clip.open(ais);
+                clip.start();
+                clip.drain();
+                clip.close();
+                return true;
+            } catch (Exception ignored) {
+                return false;
+            }
+        }
+
+        private void playPcmBytes(byte[] pcm) {
+            AudioFormat format = new AudioFormat(SAMPLE_RATE, 16, 1, true, false);
+            try (
+                ByteArrayInputStream bais = new ByteArrayInputStream(pcm);
+                AudioInputStream ais = new AudioInputStream(bais, format, pcm.length / 2)
+            ) {
+                Clip clip = AudioSystem.getClip();
+                clip.open(ais);
+                clip.start();
+                clip.drain();
+                clip.close();
+            } catch (Exception ignored) {
+                enabled.set(false);
+            }
+        }
+
+        private static Path resolveSfxRoot() {
+            Path cwd = Path.of("assets", "sfx");
+            if (Files.isDirectory(cwd)) return cwd;
+            Path nested = Path.of("final-project", "assets", "sfx");
+            if (Files.isDirectory(nested)) return nested;
+            return cwd;
+        }
+
+        private static byte[] tryLoadWav(Path root, String fileName) {
+            Path file = root.resolve(fileName);
+            if (!Files.isRegularFile(file)) return null;
+            try {
+                return Files.readAllBytes(file);
+            } catch (IOException ignored) {
+                return null;
+            }
+        }
+
+        private byte[] synthTone(float frequency, int durationMs, float volume) {
+            int sampleCount = Math.max(1, (int) (SAMPLE_RATE * durationMs / 1000.0f));
+            byte[] out = new byte[sampleCount * 2];
+            for (int i = 0; i < sampleCount; i++) {
+                float t = i / SAMPLE_RATE;
+                float env = envelope(i, sampleCount);
+                float sample = (float) Math.sin(2.0 * Math.PI * frequency * t) * volume * env;
+                short pcm = (short) (sample * Short.MAX_VALUE);
+                out[i * 2] = (byte) (pcm & 0xFF);
+                out[i * 2 + 1] = (byte) ((pcm >> 8) & 0xFF);
+            }
+            return out;
+        }
+
+        private float envelope(int i, int total) {
+            int attack = Math.max(1, total / 15);
+            int release = Math.max(1, total / 8);
+            if (i < attack) return i / (float) attack;
+            if (i > total - release) return Math.max(0.0f, (total - i) / (float) release);
+            return 1.0f;
+        }
     }
 
     private enum NetworkMode {
