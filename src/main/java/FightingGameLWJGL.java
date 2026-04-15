@@ -80,6 +80,7 @@ public class FightingGameLWJGL {
     private final Fighter p1 = new Fighter();
     private final Fighter p2 = new Fighter();
     private final boolean[] prevKeys = new boolean[GLFW_KEY_LAST + 1];
+    private final Map<String, Integer> portraitTextures = new HashMap<>();
 
     private List<FighterModel> models;
     private NetworkMode networkMode = NetworkMode.OFFLINE;
@@ -111,6 +112,7 @@ public class FightingGameLWJGL {
             if (models.isEmpty()) {
                 throw new IllegalStateException("No OBJ files found under final-project/models or models");
             }
+            loadPortraitTextures();
 
             p1.selected = 0;
             p2.selected = models.size() > 1 ? 1 : 0;
@@ -139,6 +141,7 @@ public class FightingGameLWJGL {
             for (FighterModel model : models == null ? List.<FighterModel>of() : models) {
                 model.mesh().dispose();
             }
+            disposePortraitTextures();
             glfwDestroyWindow(window);
             glfwTerminate();
             GLFWErrorCallback cb = glfwSetErrorCallback(null);
@@ -821,11 +824,17 @@ public class FightingGameLWJGL {
             int x = startX + i * (tileSize + tileGap);
             boolean p1Selected = i == p1.selected;
             boolean p2Selected = i == p2.selected;
+            String modelName = models.get(i).name();
+            int portraitTex = portraitTextures.getOrDefault(normalizePortraitKey(modelName), 0);
 
             drawRectPx(x, rowY, tileSize, tileSize, 0.14f, 0.17f, 0.23f, 0.95f);
             drawRectPx(x + 5, rowY + 5, tileSize - 10, tileSize - 10, 0.22f, 0.26f, 0.34f, 0.92f);
-            drawText(x + 16, rowY + 44, "PNG", 0.93f, 0.95f, 0.99f);
-            drawText(x + 8, rowY + tileSize + 18, models.get(i).name(), 0.90f, 0.92f, 0.98f);
+            if (portraitTex != 0) {
+                drawTexturePx(x + 5, rowY + 5, tileSize - 10, tileSize - 10, portraitTex, 1.0f);
+            } else {
+                drawText(x + 16, rowY + 44, "PNG", 0.93f, 0.95f, 0.99f);
+            }
+            drawText(x + 8, rowY + tileSize + 18, modelName, 0.90f, 0.92f, 0.98f);
 
             if (p1Selected) {
                 drawRectOutlinePx(x - 3, rowY - 3, tileSize + 6, tileSize + 6, 2, 0.33f, 0.88f, 0.55f, 0.98f);
@@ -1010,6 +1019,25 @@ public class FightingGameLWJGL {
         drawRectPx(x + w - thickness, y + thickness, thickness, h - (thickness * 2), r, g, b, a);
     }
 
+    private void drawTexturePx(int x, int y, int w, int h, int textureId, float alpha) {
+        if (w <= 0 || h <= 0 || textureId == 0) return;
+        glEnable(GL_TEXTURE_2D);
+        glBindTexture(GL_TEXTURE_2D, textureId);
+        glColor4f(1.0f, 1.0f, 1.0f, alpha);
+        glBegin(GL_QUADS);
+        glTexCoord2f(0.0f, 0.0f);
+        glVertex2f(x, y);
+        glTexCoord2f(1.0f, 0.0f);
+        glVertex2f(x + w, y);
+        glTexCoord2f(1.0f, 1.0f);
+        glVertex2f(x + w, y + h);
+        glTexCoord2f(0.0f, 1.0f);
+        glVertex2f(x, y + h);
+        glEnd();
+        glBindTexture(GL_TEXTURE_2D, 0);
+        glDisable(GL_TEXTURE_2D);
+    }
+
     private void drawText(float x, float y, String text, float r, float g, float b) {
         ByteBuffer textBuffer = BufferUtils.createByteBuffer(text.length() * 270);
         int quads = STBEasyFont.stb_easy_font_print(x, y, text, null, textBuffer);
@@ -1078,6 +1106,95 @@ public class FightingGameLWJGL {
             out.add(new FighterModel(name, mesh, paletteColor(i)));
         }
         return out;
+    }
+
+    private void loadPortraitTextures() {
+        disposePortraitTextures();
+        Path root = resolvePortraitsRoot();
+        if (!Files.isDirectory(root)) return;
+
+        try (Stream<Path> stream = Files.list(root)) {
+            stream
+                .filter(Files::isRegularFile)
+                .filter(p -> p.getFileName().toString().toLowerCase().endsWith(".png"))
+                .forEach(path -> {
+                    int textureId = loadPngTextureSafe(path);
+                    if (textureId != 0) {
+                        portraitTextures.put(normalizePortraitKey(stripExtension(path.getFileName().toString())), textureId);
+                    }
+                });
+        } catch (IOException ignored) {
+        }
+    }
+
+    private Path resolvePortraitsRoot() {
+        Path cwd = Path.of("assets", "portraits");
+        if (Files.isDirectory(cwd)) return cwd;
+
+        Path nested = Path.of("final-project", "assets", "portraits");
+        if (Files.isDirectory(nested)) return nested;
+
+        return cwd;
+    }
+
+    private void disposePortraitTextures() {
+        for (int textureId : portraitTextures.values()) {
+            if (textureId != 0) {
+                glDeleteTextures(textureId);
+            }
+        }
+        portraitTextures.clear();
+    }
+
+    private static String normalizePortraitKey(String value) {
+        return value == null ? "" : value.trim().toLowerCase();
+    }
+
+    private static String stripExtension(String fileName) {
+        int dot = fileName.lastIndexOf('.');
+        return dot <= 0 ? fileName : fileName.substring(0, dot);
+    }
+
+    private static int loadPngTextureSafe(Path path) {
+        try {
+            return loadPngTexture(path);
+        } catch (IOException e) {
+            return 0;
+        }
+    }
+
+    private static int loadPngTexture(Path path) throws IOException {
+        BufferedImage image = ImageIO.read(path.toFile());
+        if (image == null) {
+            throw new IOException("Failed to decode image: " + path);
+        }
+
+        int w = image.getWidth();
+        int h = image.getHeight();
+        int[] argb = new int[w * h];
+        image.getRGB(0, 0, w, h, argb, 0, w);
+
+        ByteBuffer rgba = BufferUtils.createByteBuffer(w * h * 4);
+        for (int y = 0; y < h; y++) {
+            for (int x = 0; x < w; x++) {
+                int p = argb[y * w + x];
+                rgba.put((byte) ((p >> 16) & 0xFF));
+                rgba.put((byte) ((p >> 8) & 0xFF));
+                rgba.put((byte) (p & 0xFF));
+                rgba.put((byte) ((p >> 24) & 0xFF));
+            }
+        }
+        rgba.flip();
+
+        int tex = glGenTextures();
+        glBindTexture(GL_TEXTURE_2D, tex);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
+        glBindTexture(GL_TEXTURE_2D, 0);
+        return tex;
     }
 
     private Path resolveModelsRoot() {
