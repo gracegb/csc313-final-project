@@ -8,6 +8,8 @@ import javax.sound.sampled.AudioFormat;
 import javax.sound.sampled.AudioInputStream;
 import javax.sound.sampled.AudioSystem;
 import javax.sound.sampled.Clip;
+import javax.sound.sampled.DataLine;
+import javax.sound.sampled.LineEvent;
 import java.awt.image.BufferedImage;
 import java.io.ByteArrayInputStream;
 import java.io.BufferedReader;
@@ -619,6 +621,11 @@ public class FightingGameLWJGL {
     }
 
     private void updateAttackState(Fighter fighter, boolean punchPressed, boolean kickPressed) {
+        // Play punch SFX immediately on key press for responsive feedback.
+        if (punchPressed) {
+            sounds.play(Sfx.PUNCH);
+        }
+
         if (fighter.cooldown > 0) fighter.cooldown--;
 
         if (fighter.attack != AttackType.NONE) {
@@ -646,7 +653,6 @@ public class FightingGameLWJGL {
             fighter.attackTimer = PUNCH_ACTIVE_FRAMES;
             fighter.cooldown = PUNCH_COOLDOWN;
             fighter.hitApplied = false;
-            sounds.play(Sfx.PUNCH);
         }
     }
 
@@ -1233,9 +1239,9 @@ public class FightingGameLWJGL {
     }
 
     private enum Sfx {
-        UI_MOVE("ui_move.wav", 760.0f, 45, 0.20f, 70),
-        UI_CONFIRM("ui_confirm.wav", 620.0f, 95, 0.24f, 90),
-        UI_READY("ui_ready.wav", 910.0f, 75, 0.22f, 110),
+        UI_MOVE("menu-screen.wav", 760.0f, 45, 0.20f, 70),
+        UI_CONFIRM("menu-screen.wav", 620.0f, 95, 0.24f, 90),
+        UI_READY("menu-screen.wav", 910.0f, 75, 0.22f, 110),
         ROUND_START("round_start.wav", 520.0f, 140, 0.26f, 300),
         PUNCH("punch.wav", 270.0f, 70, 0.20f, 80),
         KICK("kick.wav", 200.0f, 95, 0.24f, 120),
@@ -1259,19 +1265,26 @@ public class FightingGameLWJGL {
 
     private static final class SoundEngine {
         private static final float SAMPLE_RATE = 22050.0f;
+        private static final boolean AUDIO_DEBUG = Boolean.parseBoolean(System.getProperty("fg.audio.debug", "true"));
         private final AtomicBoolean enabled = new AtomicBoolean(true);
         private final EnumMap<Sfx, byte[]> wavCache = new EnumMap<>(Sfx.class);
         private final EnumMap<Sfx, byte[]> pcmCache = new EnumMap<>(Sfx.class);
         private final EnumMap<Sfx, Long> lastQueuedAtNs = new EnumMap<>(Sfx.class);
         private final BlockingQueue<Sfx> queue = new LinkedBlockingQueue<>();
+        private final List<Clip> activeClips = new CopyOnWriteArrayList<>();
         private final Thread worker;
 
         private SoundEngine() {
             Path sfxRoot = resolveSfxRoot();
+            log("Audio backend: Java Sound (Clip). OpenAL device/context is not used by this build.");
+            log("SFX root resolved to: " + sfxRoot.toAbsolutePath());
             for (Sfx sfx : Sfx.values()) {
                 byte[] wav = tryLoadWav(sfxRoot, sfx.fileName);
                 if (wav != null) {
                     wavCache.put(sfx, wav);
+                    log("Loaded WAV bytes for " + sfx.name() + " from " + sfx.fileName + " (" + wav.length + " bytes)");
+                } else {
+                    log("No WAV found for " + sfx.name() + " at " + sfxRoot.resolve(sfx.fileName).toAbsolutePath() + " (using synth fallback)");
                 }
                 pcmCache.put(sfx, synthTone(sfx.frequency, sfx.durationMs, sfx.volume));
                 lastQueuedAtNs.put(sfx, 0L);
@@ -1294,6 +1307,14 @@ public class FightingGameLWJGL {
         void shutdown() {
             enabled.set(false);
             worker.interrupt();
+            for (Clip clip : activeClips) {
+                try {
+                    clip.stop();
+                    clip.close();
+                } catch (Exception ignored) {
+                }
+            }
+            activeClips.clear();
         }
 
         private void runWorker() {
@@ -1322,15 +1343,33 @@ public class FightingGameLWJGL {
         private boolean playWavBytes(byte[] wavBytes) {
             try (
                 ByteArrayInputStream bais = new ByteArrayInputStream(wavBytes);
-                AudioInputStream ais = AudioSystem.getAudioInputStream(bais)
+                AudioInputStream sourceAis = AudioSystem.getAudioInputStream(bais)
             ) {
+                AudioFormat src = sourceAis.getFormat();
+                AudioFormat decodedFormat = new AudioFormat(
+                    AudioFormat.Encoding.PCM_SIGNED,
+                    src.getSampleRate(),
+                    16,
+                    src.getChannels(),
+                    src.getChannels() * 2,
+                    src.getSampleRate(),
+                    false
+                );
+
+                DataLine.Info info = new DataLine.Info(Clip.class, decodedFormat);
+                if (!AudioSystem.isLineSupported(info)) {
+                    log("Decoded WAV line not supported: " + decodedFormat);
+                    return false;
+                }
+
+                AudioInputStream decodedAis = AudioSystem.getAudioInputStream(decodedFormat, sourceAis);
                 Clip clip = AudioSystem.getClip();
-                clip.open(ais);
-                clip.start();
-                clip.drain();
-                clip.close();
+                clip.open(decodedAis);
+                startClip(clip);
+                decodedAis.close();
                 return true;
-            } catch (Exception ignored) {
+            } catch (Exception e) {
+                log("WAV playback failed: " + e.getClass().getSimpleName() + ": " + e.getMessage());
                 return false;
             }
         }
@@ -1343,11 +1382,9 @@ public class FightingGameLWJGL {
             ) {
                 Clip clip = AudioSystem.getClip();
                 clip.open(ais);
-                clip.start();
-                clip.drain();
-                clip.close();
-            } catch (Exception ignored) {
-                enabled.set(false);
+                startClip(clip);
+            } catch (Exception e) {
+                log("PCM fallback playback failed: " + e.getClass().getSimpleName() + ": " + e.getMessage());
             }
         }
 
@@ -1389,6 +1426,26 @@ public class FightingGameLWJGL {
             if (i < attack) return i / (float) attack;
             if (i > total - release) return Math.max(0.0f, (total - i) / (float) release);
             return 1.0f;
+        }
+
+        private void startClip(Clip clip) {
+            activeClips.add(clip);
+            clip.addLineListener(event -> {
+                LineEvent.Type type = event.getType();
+                if (type == LineEvent.Type.STOP || type == LineEvent.Type.CLOSE) {
+                    try {
+                        clip.close();
+                    } catch (Exception ignored) {
+                    }
+                    activeClips.remove(clip);
+                }
+            });
+            clip.start();
+        }
+
+        private static void log(String msg) {
+            if (!AUDIO_DEBUG) return;
+            System.out.println("[audio] " + msg);
         }
     }
 
