@@ -35,6 +35,9 @@ import java.net.ServerSocket;
 import java.net.Socket;
 import java.net.InetSocketAddress;
 
+import java.util.Deque;
+import java.util.ArrayDeque;
+
 import static org.lwjgl.glfw.GLFW.*;
 import static org.lwjgl.opengl.GL11.*;
 import static org.lwjgl.opengl.GL12.*;
@@ -99,6 +102,7 @@ public class FightingGameLWJGL {
     private int joinPort = 7777;
     private final SoundEngine sounds = new SoundEngine();
 
+    private final Deque<GameState> stateStack = new ArrayDeque<>();
     private GameState gameState = GameState.MODE_SELECT;
     private int winner = 0;
 
@@ -117,20 +121,20 @@ public class FightingGameLWJGL {
             loadPortraitTextures();
 
             p1.selected = 0;
-            p2.selected = models.size() > 1 ? 1 : 0;
+            p2.selected = models.size() > 1 ? (int)(Math.random() * models.size()) : 0;
             p1.ready = false;
             p2.ready = false;
 
             if (networkMode != NetworkMode.OFFLINE) {
                 gameMode = GameMode.MULTIPLAYER;
-                gameState = GameState.MULTIPLAYER_WAITING;
+                changeState(GameState.MULTIPLAYER_WAITING);
                 if (networkMode == NetworkMode.HOST) {
                     networkStatus = "HOST " + hostSession.port + " | waiting for player to connect";
                 } else if (networkMode == NetworkMode.CLIENT) {
                     networkStatus = "JOIN " + joinHost + ":" + joinPort + " | connecting";
                 }
             } else {
-                gameState = GameState.MODE_SELECT;
+                changeState(GameState.MODE_SELECT);
             }
 
             startNetworkIfNeeded();
@@ -228,12 +232,26 @@ public class FightingGameLWJGL {
         }
     }
 
+    private void setState(GameState newState) {
+        if (gameState != null) {
+            stateStack.push(gameState);
+        }
+        gameState = newState;
+    }
+
     private void update() {
+        PlayerInput p1Input = collectP1Input();
+
+        if (p1Input.back) {
+            goBack();
+            return;
+        }
+
         if (networkMode == NetworkMode.CLIENT) {
             updateClientOnly();
         } else {
-            PlayerInput p1Input = collectP1Input();
             PlayerInput p2Input;
+
             if (networkMode == NetworkMode.HOST) {
                 p2Input = hostSession.consumeP2Input();
             } else if (gameMode == GameMode.SINGLE_PLAYER && gameState == GameState.FIGHT) {
@@ -262,7 +280,7 @@ public class FightingGameLWJGL {
                         p1.ready = false;
                         p2.ready = false;
                         winner = 0;
-                        gameState = GameState.MULTIPLAYER_WAITING;
+                        changeState(GameState.MULTIPLAYER_WAITING);
                     }
                 }
                 hostSession.broadcastSnapshot(GameSnapshot.capture(gameState, winner, p1, p2));
@@ -279,6 +297,26 @@ public class FightingGameLWJGL {
         }
     }
 
+    private void goBack() {
+        if (gameMode == GameMode.SINGLE_PLAYER || gameMode == GameMode.MULTIPLAYER) {
+            if (gameState == GameState.FIGHT){
+                return;
+            }
+        }
+        if (gameMode == GameMode.MULTIPLAYER){
+            if (gameState == GameState.MULTIPLAYER_WAITING){
+                return;
+            }
+        }
+        if (stateStack.isEmpty()) return;
+        gameState = stateStack.pop();
+    }
+
+    private void changeState(GameState newState) {
+        stateStack.push(gameState);
+        gameState = newState;
+    }
+
     private void updateModeSelect(PlayerInput p1Input) {
         if (p1Input.selectLeft || p1Input.selectRight) {
             modeSelectionIndex = 1 - modeSelectionIndex;
@@ -289,11 +327,11 @@ public class FightingGameLWJGL {
             sounds.play(Sfx.UI_CONFIRM);
             p1.ready = false;
             p2.ready = false;
-            p2.selected = models.size() > 1 ? wrap(p1.selected + 1, models.size()) : p1.selected;
+            p2.selected = models.size() > 1 ? (int)(Math.random() * models.size()) : p1.selected;
             if (gameMode == GameMode.SINGLE_PLAYER) {
                 networkMode = NetworkMode.OFFLINE;
                 networkStatus = "LOCAL";
-                gameState = GameState.CHAR_SELECT;
+                setState(GameState.CHAR_SELECT);
             } else {
                 networkMode = NetworkMode.OFFLINE;
                 networkStatus = "MULTIPLAYER";
@@ -328,7 +366,7 @@ public class FightingGameLWJGL {
                 hostSession = new HostSession(joinPort);
                 hostSession.start();
                 networkStatus = "HOST " + joinPort + " | waiting for player to connect";
-                gameState = GameState.MULTIPLAYER_WAITING;
+                changeState(GameState.MULTIPLAYER_WAITING);
             } catch (IOException e) {
                 networkMode = NetworkMode.OFFLINE;
                 networkStatus = "HOST START FAILED";
@@ -339,7 +377,7 @@ public class FightingGameLWJGL {
                 clientSession = new ClientSession(joinHost, joinPort);
                 clientSession.connect();
                 networkStatus = "JOIN " + joinHost + ":" + joinPort + " | connecting";
-                gameState = GameState.MULTIPLAYER_WAITING;
+                changeState(GameState.MULTIPLAYER_WAITING);
             } catch (IOException e) {
                 networkMode = NetworkMode.OFFLINE;
                 networkStatus = "JOIN FAILED";
@@ -351,7 +389,7 @@ public class FightingGameLWJGL {
         if (networkMode == NetworkMode.HOST && hostSession != null && hostSession.hasActivePlayerTwo()) {
             p1.ready = false;
             p2.ready = false;
-            gameState = GameState.CHAR_SELECT;
+            setState(GameState.CHAR_SELECT);
         }
         if (networkMode == NetworkMode.OFFLINE) {
             gameState = GameState.MULTIPLAYER_ROLE_SELECT;
@@ -429,7 +467,7 @@ public class FightingGameLWJGL {
         aiStrafeBias = 0.0f;
 
         winner = 0;
-        gameState = GameState.FIGHT;
+        changeState(GameState.FIGHT);
         sounds.play(Sfx.ROUND_START);
     }
 
@@ -438,6 +476,8 @@ public class FightingGameLWJGL {
             if (p1Input.confirm || p2Input.confirm) {
                 p1.ready = false;
                 p2.ready = gameMode == GameMode.SINGLE_PLAYER;
+                stateStack.clear();
+                stateStack.push(GameState.MODE_SELECT);
                 gameState = GameState.CHAR_SELECT;
                 sounds.play(Sfx.UI_CONFIRM);
             }
@@ -531,7 +571,8 @@ public class FightingGameLWJGL {
             isPressed(GLFW_KEY_F),
             leftPressed,
             rightPressed,
-            isPressed(GLFW_KEY_ENTER)
+            isPressed(GLFW_KEY_ENTER),
+                isPressed(GLFW_KEY_B)
         );
     }
 
@@ -546,7 +587,8 @@ public class FightingGameLWJGL {
             isPressed(GLFW_KEY_RIGHT_SHIFT) || isPressed(GLFW_KEY_LEFT_SHIFT),
             isPressed(GLFW_KEY_LEFT),
             isPressed(GLFW_KEY_RIGHT),
-            isPressed(GLFW_KEY_ENTER)
+            isPressed(GLFW_KEY_ENTER),
+                isPressed(GLFW_KEY_B)
         );
     }
 
@@ -616,7 +658,8 @@ public class FightingGameLWJGL {
             false,
             false,
             false,
-            false
+            false,
+                false
         );
     }
 
@@ -885,38 +928,38 @@ public class FightingGameLWJGL {
 
     private void drawModeSelectOverlay() {
         beginOverlay();
-
-        drawRectPx(140, 90, WIDTH - 280, 110, 0.05f, 0.07f, 0.10f, 0.90f);
-        drawText(370, 140, "SELECT GAME MODE", 0.96f, 0.98f, 1.0f);
-        drawText(210, 172, "A/D OR LEFT/RIGHT TO SWITCH  |  ENTER OR F TO CONFIRM", 0.82f, 0.90f, 0.98f);
-
         int y = 270;
-        int boxW = 460;
-        int boxH = 110;
+        int boxW = 250;
+        int boxH = 55;
         int leftX = 150;
         int rightX = WIDTH - leftX - boxW;
+        float singleX = (WIDTH - boxW) / 2 + boxW / 2 - 30;
+
+//        drawRectPx(140, 90, WIDTH - 280, 110, 0.05f, 0.07f, 0.10f, 0.90f);
+        drawText(singleX - 15, y + 130, "SELECT GAME MODE", 0.96f, 0.98f, 1.0f);
+        drawText(950, 705, "A/D OR LEFT/RIGHT TO SWITCH  |  ENTER OR F TO CONFIRM", 0.82f, 0.90f, 0.98f);
 
         boolean singleSelected = modeSelectionIndex == 0;
         boolean multiSelected = modeSelectionIndex == 1;
 
-        drawRectPx(leftX, y, boxW, boxH, singleSelected ? 0.18f : 0.08f, singleSelected ? 0.62f : 0.14f, singleSelected ? 0.36f : 0.20f, 0.95f);
-        drawRectPx(rightX, y, boxW, boxH, multiSelected ? 0.19f : 0.08f, multiSelected ? 0.40f : 0.14f, multiSelected ? 0.66f : 0.20f, 0.95f);
+        drawRectPx((WIDTH - boxW) / 2, y + 155, boxW, boxH, singleSelected ? 0.18f : 0.08f, singleSelected ? 0.62f : 0.14f, singleSelected ? 0.36f : 0.20f, 0.95f);
+        drawRectPx((WIDTH - boxW) / 2, y + 255, boxW, boxH, multiSelected ? 0.19f : 0.08f, multiSelected ? 0.40f : 0.14f, multiSelected ? 0.66f : 0.20f, 0.95f);
 
         if (singleSelected) {
-            drawRectOutlinePx(leftX - 4, y - 4, boxW + 8, boxH + 8, 3, 0.46f, 0.93f, 0.66f, 0.98f);
+            drawRectOutlinePx((WIDTH - boxW) / 2, y + 155 , boxW, boxH, 3, 0.46f, 0.93f, 0.66f, 0.98f);
         }
         if (multiSelected) {
-            drawRectOutlinePx(rightX - 4, y - 4, boxW + 8, boxH + 8, 3, 0.54f, 0.78f, 0.98f, 0.98f);
+            drawRectOutlinePx((WIDTH - boxW) / 2, y + 255, boxW, boxH, 3, 0.54f, 0.78f, 0.98f, 0.98f);
         }
 
-        drawText(leftX + 122, y + 50, "SINGLE PLAYER", 0.95f, 1.0f, 0.97f);
-        drawText(leftX + 48, y + 82, "LOCAL HUMAN VS AI-CONTROLLED OPPONENT", 0.83f, 0.92f, 0.88f);
+        drawText(singleX - 4, y + 174 , "SINGLE PLAYER", 0.95f, 1.0f, 0.97f);
+        drawText(singleX - 80, y + 187, "LOCAL HUMAN VS AI-CONTROLLED OPPONENT", 0.83f, 0.92f, 0.88f);
 
-        drawText(rightX + 130, y + 50, "MULTIPLAYER", 0.95f, 0.98f, 1.0f);
-        drawText(rightX + 54, y + 82, "LOCAL 2P OR NETWORK HOST/JOIN SESSION", 0.84f, 0.90f, 0.97f);
+        drawText(singleX, y + 273, "MULTIPLAYER", 0.95f, 0.98f, 1.0f);
+        drawText(singleX-80, y + 289, "LOCAL 2P OR NETWORK HOST/JOIN SESSION", 0.84f, 0.90f, 0.97f);
 
-        drawRectPx(180, HEIGHT - 120, WIDTH - 360, 60, 0.06f, 0.08f, 0.12f, 0.88f);
-        drawText(208, HEIGHT - 84, "CURRENT SESSION: " + networkStatus, 0.79f, 0.87f, 0.97f);
+//        drawRectPx(180, HEIGHT - 120, WIDTH - 360, 60, 0.06f, 0.08f, 0.12f, 0.88f);
+        drawText(15, 705, "CURRENT SESSION: " + networkStatus, 0.79f, 0.87f, 0.97f);
 
         endOverlay();
     }
@@ -1472,6 +1515,8 @@ public class FightingGameLWJGL {
         final boolean selectLeft;
         final boolean selectRight;
         final boolean confirm;
+        final boolean back;
+
 
         private PlayerInput(
             boolean left,
@@ -1483,7 +1528,9 @@ public class FightingGameLWJGL {
             boolean readyToggle,
             boolean selectLeft,
             boolean selectRight,
-            boolean confirm
+            boolean confirm,
+            boolean back
+
         ) {
             this.left = left;
             this.right = right;
@@ -1495,6 +1542,7 @@ public class FightingGameLWJGL {
             this.selectLeft = selectLeft;
             this.selectRight = selectRight;
             this.confirm = confirm;
+            this.back = back;
         }
 
         static PlayerInput of(
@@ -1507,19 +1555,20 @@ public class FightingGameLWJGL {
             boolean readyToggle,
             boolean selectLeft,
             boolean selectRight,
-            boolean confirm
+            boolean confirm,
+            boolean back
         ) {
-            return new PlayerInput(left, right, up, down, punchPressed, kickPressed, readyToggle, selectLeft, selectRight, confirm);
+            return new PlayerInput(left, right, up, down, punchPressed, kickPressed, readyToggle, selectLeft, selectRight, confirm, back);
         }
 
         static PlayerInput empty() {
-            return new PlayerInput(false, false, false, false, false, false, false, false, false, false);
+            return new PlayerInput(false, false, false, false, false, false, false, false, false, false, false);
         }
 
         String toWire() {
             return bool(left) + "|" + bool(right) + "|" + bool(up) + "|" + bool(down) + "|"
                 + bool(punchPressed) + "|" + bool(kickPressed) + "|" + bool(readyToggle) + "|"
-                + bool(selectLeft) + "|" + bool(selectRight) + "|" + bool(confirm);
+                + bool(selectLeft) + "|" + bool(selectRight) + "|" + bool(confirm) + "|" + bool(back);
         }
 
         static PlayerInput fromWire(String[] parts, int offset) {
@@ -1533,7 +1582,8 @@ public class FightingGameLWJGL {
                 parseBool(parts[offset + 6]),
                 parseBool(parts[offset + 7]),
                 parseBool(parts[offset + 8]),
-                parseBool(parts[offset + 9])
+                parseBool(parts[offset + 9]),
+                    parseBool(parts[offset + 10])
             );
         }
 
