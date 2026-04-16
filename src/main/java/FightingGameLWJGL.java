@@ -115,7 +115,7 @@ public class FightingGameLWJGL {
             loadPortraitTextures();
 
             p1.selected = 0;
-            p2.selected = models.size() > 1 ? 1 : 0;
+            p2.selected = models.size() > 1 ? (int)(Math.random() * models.size()) : 0;
             p1.ready = false;
             p2.ready = false;
 
@@ -287,7 +287,7 @@ public class FightingGameLWJGL {
             sounds.play(Sfx.UI_CONFIRM);
             p1.ready = false;
             p2.ready = false;
-            p2.selected = models.size() > 1 ? wrap(p1.selected + 1, models.size()) : p1.selected;
+            p2.selected = models.size() > 1 ? (int)(Math.random() * models.size()) : p1.selected;
             if (gameMode == GameMode.SINGLE_PLAYER) {
                 networkMode = NetworkMode.OFFLINE;
                 networkStatus = "LOCAL";
