@@ -922,38 +922,38 @@ public class FightingGameLWJGL {
 
     private void drawModeSelectOverlay() {
         beginOverlay();
-
-        drawRectPx(140, 90, WIDTH - 280, 110, 0.05f, 0.07f, 0.10f, 0.90f);
-        drawText(370, 140, "SELECT GAME MODE", 0.96f, 0.98f, 1.0f);
-        drawText(210, 172, "A/D OR LEFT/RIGHT TO SWITCH  |  ENTER OR F TO CONFIRM", 0.82f, 0.90f, 0.98f);
-
         int y = 270;
-        int boxW = 460;
-        int boxH = 110;
+        int boxW = 250;
+        int boxH = 55;
         int leftX = 150;
         int rightX = WIDTH - leftX - boxW;
+        float singleX = (WIDTH - boxW) / 2 + boxW / 2 - 30;
+
+//        drawRectPx(140, 90, WIDTH - 280, 110, 0.05f, 0.07f, 0.10f, 0.90f);
+        drawText(singleX - 15, y + 130, "SELECT GAME MODE", 0.96f, 0.98f, 1.0f);
+        drawText(950, 705, "A/D OR LEFT/RIGHT TO SWITCH  |  ENTER OR F TO CONFIRM", 0.82f, 0.90f, 0.98f);
 
         boolean singleSelected = modeSelectionIndex == 0;
         boolean multiSelected = modeSelectionIndex == 1;
 
-        drawRectPx(leftX, y, boxW, boxH, singleSelected ? 0.18f : 0.08f, singleSelected ? 0.62f : 0.14f, singleSelected ? 0.36f : 0.20f, 0.95f);
-        drawRectPx(rightX, y, boxW, boxH, multiSelected ? 0.19f : 0.08f, multiSelected ? 0.40f : 0.14f, multiSelected ? 0.66f : 0.20f, 0.95f);
+        drawRectPx((WIDTH - boxW) / 2, y + 155, boxW, boxH, singleSelected ? 0.18f : 0.08f, singleSelected ? 0.62f : 0.14f, singleSelected ? 0.36f : 0.20f, 0.95f);
+        drawRectPx((WIDTH - boxW) / 2, y + 255, boxW, boxH, multiSelected ? 0.19f : 0.08f, multiSelected ? 0.40f : 0.14f, multiSelected ? 0.66f : 0.20f, 0.95f);
 
         if (singleSelected) {
-            drawRectOutlinePx(leftX - 4, y - 4, boxW + 8, boxH + 8, 3, 0.46f, 0.93f, 0.66f, 0.98f);
+            drawRectOutlinePx((WIDTH - boxW) / 2, y + 155 , boxW, boxH, 3, 0.46f, 0.93f, 0.66f, 0.98f);
         }
         if (multiSelected) {
-            drawRectOutlinePx(rightX - 4, y - 4, boxW + 8, boxH + 8, 3, 0.54f, 0.78f, 0.98f, 0.98f);
+            drawRectOutlinePx((WIDTH - boxW) / 2, y + 255, boxW, boxH, 3, 0.54f, 0.78f, 0.98f, 0.98f);
         }
 
-        drawText(leftX + 122, y + 50, "SINGLE PLAYER", 0.95f, 1.0f, 0.97f);
-        drawText(leftX + 48, y + 82, "LOCAL HUMAN VS AI-CONTROLLED OPPONENT", 0.83f, 0.92f, 0.88f);
+        drawText(singleX - 4, y + 174 , "SINGLE PLAYER", 0.95f, 1.0f, 0.97f);
+        drawText(singleX - 80, y + 187, "LOCAL HUMAN VS AI-CONTROLLED OPPONENT", 0.83f, 0.92f, 0.88f);
 
-        drawText(rightX + 130, y + 50, "MULTIPLAYER", 0.95f, 0.98f, 1.0f);
-        drawText(rightX + 54, y + 82, "LOCAL 2P OR NETWORK HOST/JOIN SESSION", 0.84f, 0.90f, 0.97f);
+        drawText(singleX, y + 273, "MULTIPLAYER", 0.95f, 0.98f, 1.0f);
+        drawText(singleX-80, y + 289, "LOCAL 2P OR NETWORK HOST/JOIN SESSION", 0.84f, 0.90f, 0.97f);
 
-        drawRectPx(180, HEIGHT - 120, WIDTH - 360, 60, 0.06f, 0.08f, 0.12f, 0.88f);
-        drawText(208, HEIGHT - 84, "CURRENT SESSION: " + networkStatus, 0.79f, 0.87f, 0.97f);
+//        drawRectPx(180, HEIGHT - 120, WIDTH - 360, 60, 0.06f, 0.08f, 0.12f, 0.88f);
+        drawText(15, 705, "CURRENT SESSION: " + networkStatus, 0.79f, 0.87f, 0.97f);
 
         endOverlay();
     }
