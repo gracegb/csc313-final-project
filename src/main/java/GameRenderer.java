@@ -79,6 +79,7 @@ final class GameRenderer {
         glRotatef(yaw, 0.0f, 1.0f, 0.0f);
     }
 
+    // camera for menu scene
     private void renderModeSelectScene() {
         float yaw = (float) (glfwGetTime() * 22.0);
         drawFighterPreview(-1.7f, 0.0f, game.p1.selected, false, yaw);
@@ -86,6 +87,7 @@ final class GameRenderer {
         ui.drawModeSelectOverlay();
     }
 
+    // camera moves for fight
     private void renderMultiplayerRoleScene() {
         float yaw = (float) (glfwGetTime() * 22.0);
         drawFighterPreview(-1.7f, 0.0f, game.p1.selected, false, yaw);
@@ -93,6 +95,7 @@ final class GameRenderer {
         ui.drawMultiplayerRoleSelectOverlay();
     }
 
+    // camera for waiting before fight
     private void renderMultiplayerWaitingScene() {
         float yaw = (float) (glfwGetTime() * 18.0);
         drawFighterPreview(-1.7f, 0.0f, game.p1.selected, false, yaw);
@@ -100,6 +103,7 @@ final class GameRenderer {
         ui.drawMultiplayerWaitingOverlay();
     }
 
+    // camera for character select
     private void renderCharacterSelectScene() {
         float yaw = (float) (glfwGetTime() * 35.0);
         drawFighterPreview(-2.1f, 0.0f, game.p1.selected, game.p1.ready, yaw);
@@ -107,6 +111,7 @@ final class GameRenderer {
         ui.drawCharSelectOverlay();
     }
 
+    // camera for fight
     private void renderFightScene() {
         drawFighterInFight(game.p1, true);
         drawFighterInFight(game.p2, false);
@@ -223,6 +228,8 @@ final class GameRenderer {
         glLoadIdentity();
         glFrustum(left, right, bottom, top, near, far);
     }
+
+    // HELPER MATH FUNCTIONS
 
     private static float clamp(float value, float lo, float hi) {
         return Math.max(lo, Math.min(hi, value));

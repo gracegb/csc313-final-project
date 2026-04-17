@@ -285,6 +285,7 @@ public class FightingGameLWJGL {
         }
 
         // update based on game state and input
+        // clients never simulate gameplay locally and only mirror host snapshots
         if (networkMode == NetworkMode.CLIENT) {
             updateClientOnly();
         } else {
@@ -298,6 +299,7 @@ public class FightingGameLWJGL {
     }
 
     private void updateHostOrLocal(PlayerInput p1Input) {
+        // host consumes remote p2 input once per frame while local mode uses keyboard or ai
         PlayerInput p2Input = resolveP2Input();
         updateByState(p1Input, p2Input);
 
@@ -330,6 +332,7 @@ public class FightingGameLWJGL {
     }
 
     private void updateHostNetworking() {
+        // if player two disconnects force waiting state and clear ready flags
         if (!hostSession.hasActivePlayerTwo() && gameState != GameState.MULTIPLAYER_WAITING) {
             p1.ready = false;
             p2.ready = false;
@@ -337,6 +340,7 @@ public class FightingGameLWJGL {
             changeState(GameState.MULTIPLAYER_WAITING);
         }
 
+        // host always sends authoritative snapshot to every connected client
         hostSession.broadcastSnapshot(GameSnapshot.capture(gameState, winner, p1, p2));
 
         if (hostSession.hasActivePlayerTwo()) {
@@ -402,6 +406,7 @@ public class FightingGameLWJGL {
         }
         sounds.play(Sfx.UI_CONFIRM);
 
+        // reset existing network session before switching host join roles
         p1.ready = false;
         p2.ready = false;
         winner = 0;
@@ -526,6 +531,7 @@ public class FightingGameLWJGL {
             return;
         }
 
+        // combat update order is timers then movement then collision then hit detection
         updateCombatState(p1, p1Input.blockPressed, p1Input.punchPressed, p1Input.kickPressed);
         updateCombatState(p2, p2Input.blockPressed, p2Input.punchPressed, p2Input.kickPressed);
 
@@ -585,6 +591,7 @@ public class FightingGameLWJGL {
         float minDistance = p1Radius + p2Radius;
         float minDistanceSq = minDistance * minDistance;
 
+        // run a few separation passes so overlaps resolve without large teleports
         for (int i = 0; i < 8; i++) {
             float dx = p2.x - p1.x;
             float dz = p2.z - p1.z;
@@ -615,6 +622,7 @@ public class FightingGameLWJGL {
             }
         }
 
+        // keep player ordering stable on x so fighters cannot pass through each other
         if (prevP1X <= prevP2X && p1.x > p2.x - FIGHTER_MIN_X_GAP) {
             float center = (p1.x + p2.x) * 0.5f;
             p1.x = clamp(center - FIGHTER_MIN_X_GAP * 0.5f, -ARENA_HALF_WIDTH, ARENA_HALF_WIDTH);
@@ -651,6 +659,7 @@ public class FightingGameLWJGL {
     }
 
     private void updateClientOnly() {
+        // client sends local input and then applies newest host snapshot
         PlayerInput local = collectClientInput();
         clientSession.sendInput(local);
         GameSnapshot snapshot = clientSession.consumeSnapshot();
@@ -816,6 +825,7 @@ public class FightingGameLWJGL {
     }
 
     private void updateCombatState(Fighter fighter, boolean blockPressed, boolean punchPressed, boolean kickPressed) {
+        // frame timers tick first so input checks always read current state
         if (fighter.cooldown > 0) fighter.cooldown--;
         if (fighter.attackRecoveryTimer > 0) fighter.attackRecoveryTimer--;
         if (fighter.attackFatigue > 0) fighter.attackFatigue--;
@@ -846,6 +856,7 @@ public class FightingGameLWJGL {
             fighter.blockCooldown = BLOCK_COOLDOWN_FRAMES;
         }
 
+        // no new actions can start while recovery or cooldown is active
         if (fighter.cooldown > 0 || fighter.attackRecoveryTimer > 0) return;
 
         if (kickPressed) {
@@ -881,6 +892,7 @@ public class FightingGameLWJGL {
         boolean inFront = attacker.facing > 0 ? dx > -0.1f : dx < 0.1f;
         if (!inFront) return;
 
+        // successful block reflects pressure back and stuns the attacker
         if (defender.blockWindowTimer > 0) {
             attacker.stunTimer = STUN_FRAMES;
             attacker.attack = AttackType.NONE;
@@ -1668,6 +1680,7 @@ public class FightingGameLWJGL {
                 try {
                     Socket socket = serverSocket.accept();
                     socket.setTcpNoDelay(true);
+                    // first connected client becomes player two and extra clients become spectators
                     int slot = hasSlot2Peer() ? 0 : 2;
                     ClientPeer peer = new ClientPeer(socket, slot);
                     peers.add(peer);
@@ -1816,6 +1829,7 @@ public class FightingGameLWJGL {
                         if ("WELCOME".equals(parts[0])) {
                             assignedSlot = Integer.parseInt(parts[1]);
                         } else if ("SNAP".equals(parts[0]) && parts.length >= 22) {
+                            // slot can change from spectator to player two after reconnects
                             assignedSlot = Integer.parseInt(parts[1]);
                             latestSnapshot.set(GameSnapshot.fromWire(parts));
                         }

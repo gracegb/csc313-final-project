@@ -16,6 +16,7 @@ final class GameUIRenderer {
         this.game = game;
     }
 
+    // UI overlay for char select
     void drawCharSelectOverlay() {
         beginOverlay();
 
