@@ -1,5 +1,8 @@
 import org.lwjgl.BufferUtils;
 import org.lwjgl.stb.STBEasyFont;
+import java.nio.IntBuffer;
+import org.lwjgl.stb.STBImage;
+import static org.lwjgl.system.MemoryStack.stackPush;
 
 import java.nio.ByteBuffer;
 
@@ -7,6 +10,7 @@ import static org.lwjgl.opengl.GL11.*;
 
 final class GameUIRenderer {
     private final FightingGameLWJGL game;
+    int title;
 
     GameUIRenderer(FightingGameLWJGL game) {
         this.game = game;
@@ -92,6 +96,18 @@ final class GameUIRenderer {
         if (multiSelected) {
             drawRectOutlinePx((FightingGameLWJGL.WIDTH - boxW) / 2, y + 255, boxW, boxH, 3, 0.54f, 0.78f, 0.98f, 0.98f);
         }
+
+        int w = 950;
+        int h = w / 2;
+
+        drawTexturePx(
+                FightingGameLWJGL.WIDTH / 2 - w / 2 + 19,
+                -5,
+                w,
+                h,
+                title,
+                1.0f
+        );
 
         drawText(singleX - 4, y + 174, "SINGLE PLAYER", 0.95f, 1.0f, 0.97f);
         drawText(singleX - 80, y + 187, "LOCAL HUMAN VS AI-CONTROLLED OPPONENT", 0.83f, 0.92f, 0.88f);
@@ -282,4 +298,42 @@ final class GameUIRenderer {
         glDrawArrays(GL_QUADS, 0, quads * 4);
         glDisableClientState(GL_VERTEX_ARRAY);
     }
+
+    private int loadTexture(String path) {
+        int width, height;
+        ByteBuffer image;
+
+        try (var stack = org.lwjgl.system.MemoryStack.stackPush()) {
+            IntBuffer w = stack.mallocInt(1);
+            IntBuffer h = stack.mallocInt(1);
+            IntBuffer channels = stack.mallocInt(1);
+
+            image = org.lwjgl.stb.STBImage.stbi_load(path, w, h, channels, 4);
+            if (image == null) {
+                throw new RuntimeException("Failed to load: " + path);
+            }
+
+            width = w.get();
+            height = h.get();
+        }
+
+        int textureId = glGenTextures();
+        glBindTexture(GL_TEXTURE_2D, textureId);
+
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0,
+                GL_RGBA, GL_UNSIGNED_BYTE, image);
+
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+
+        STBImage.stbi_image_free(image);
+
+        return textureId;
+    }
+
+    void init() {
+        title = loadTexture("assets/portraits/titleF.png");
+    }
+
+
 }
