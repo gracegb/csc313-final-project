@@ -122,6 +122,7 @@ public class FightingGameLWJGL {
     private float aiStrafeBias = 0.0f;
     String joinHost = "127.0.0.1";
     int joinPort = 7777;
+    private boolean audioEnabled = true;
     private final SoundEngine sounds = new SoundEngine();
     private final GameUIRenderer uiRenderer = new GameUIRenderer(this);
     private final GameRenderer renderer = new GameRenderer(this, uiRenderer);
@@ -136,6 +137,9 @@ public class FightingGameLWJGL {
 
     private void run(String[] args) {
         configureNetwork(args == null ? new String[0] : args);
+        if (!audioEnabled) {
+            sounds.setEnabled(false);
+        }
         initWindow();
         try {
             models = loadModels();
@@ -184,26 +188,35 @@ public class FightingGameLWJGL {
     }
 
     private void configureNetwork(String[] args) {
-        if (args.length == 0) {
+        List<String> positional = new ArrayList<>();
+        for (String arg : args) {
+            if ("--no-audio".equalsIgnoreCase(arg)) {
+                audioEnabled = false;
+            } else {
+                positional.add(arg);
+            }
+        }
+
+        if (positional.isEmpty()) {
             networkMode = NetworkMode.OFFLINE;
             return;
         }
 
-        if ("--host".equalsIgnoreCase(args[0])) {
+        if ("--host".equalsIgnoreCase(positional.get(0))) {
             networkMode = NetworkMode.HOST;
-            int port = args.length >= 2 ? Integer.parseInt(args[1]) : 7777;
+            int port = positional.size() >= 2 ? Integer.parseInt(positional.get(1)) : 7777;
             joinPort = port;
             hostSession = new HostSession(port);
             networkStatus = "HOST " + port;
             return;
         }
 
-        if ("--join".equalsIgnoreCase(args[0])) {
-            if (args.length < 2) {
+        if ("--join".equalsIgnoreCase(positional.get(0))) {
+            if (positional.size() < 2) {
                 throw new IllegalArgumentException("Usage: --join <host:port> (example: --join 127.0.0.1:7777)");
             }
             networkMode = NetworkMode.CLIENT;
-            String[] hp = args[1].split(":", 2);
+            String[] hp = positional.get(1).split(":", 2);
             if (hp.length != 2) {
                 throw new IllegalArgumentException("Join target must be <host:port>");
             }
@@ -216,7 +229,7 @@ public class FightingGameLWJGL {
             return;
         }
 
-        throw new IllegalArgumentException("Unknown args. Use no args, --host [port], or --join host:port");
+        throw new IllegalArgumentException("Unknown args. Use no args, --host [port], --join host:port, and optional --no-audio");
     }
 
     private void initWindow() {
@@ -1214,6 +1227,14 @@ public class FightingGameLWJGL {
                 }
             }
             activeClips.clear();
+        }
+
+        void setEnabled(boolean enabledValue) {
+            enabled.set(enabledValue);
+            if (!enabledValue) {
+                queue.clear();
+                stopMusic();
+            }
         }
 
         void setMusic(MusicTrack track) {
